@@ -289,30 +289,23 @@ if (cssRenderer && !tvState.cssObj) attachTVDivToScreen();
 window.onYouTubeIframeAPIReady = function(){ tvState.apiReady = true; ensureYTPlayer(); if (tvState.wantPlay && tvState.playerReady && tvState.player) { try { tvState.player.playVideo(); tvState.playing = true; } catch(_){} } };
 
 function ensureYTPlayer(){
-  // Crear el player sólo cuando la API esté lista
   if (tvState.player) return tvState.player;
   if (!tvState.apiReady || !tvState.iframe) return null;
   tvState.player = new YT.Player(tvState.iframe, {
     host: 'https://www.youtube.com',
     events: {
-      'onReady': (e)=>{
+      onReady: (e) => {
         tvState.playerReady = true;
         try { e.target.mute(); } catch(_){}
-        // Si el usuario pidió Play antes de que el player esté listo
         if (tvState.wantPlay) {
           try { e.target.playVideo(); tvState.playing = true; } catch(_){}
         }
       },
-      'onStateChange': (e)=>{ const S = YT.PlayerState; tvState.playing = (e.data === S.PLAYING); }
+      onStateChange: (e) => { const S = YT.PlayerState; tvState.playing = (e.data === S.PLAYING); }
     },
     playerVars: { autoplay: 0, controls: 0, rel: 0, loop: 1, playlist: tvState.videoId, modestbranding: 1, playsinline: 1, origin: window.location.origin }
   });
   return tvState.player;
-},
-      'onStateChange': (e)=>{ const S = YT.PlayerState; tvState.playing = (e.data === S.PLAYING); }
-    },
-    playerVars: { autoplay: 0, controls: 0, rel: 0, loop: 1, playlist: tvState.videoId, modestbranding: 1, playsinline: 1 }
-  });
 }
 
 function powerOnTV(){
@@ -327,7 +320,7 @@ function playTV(){
   if (p && tvState.apiReady) {
     try { p.playVideo(); tvState.playing = true; } catch(_){}
   }
-} }
+}
 function pauseTV(){ if (tvState.player){ tvState.player.pauseVideo(); tvState.playing=false; } }
 
 // ========= EXTRAS EN SALAS B y C =========
@@ -570,4 +563,3 @@ addFrame( 4.0, 2.0,  ROOM_HALF - 0.05, 1.4, 0.9);
 </script>
 </body>
 </html>
-
