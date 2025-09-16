@@ -51,6 +51,20 @@
   <script src="https://www.youtube.com/iframe_api"></script>
 <script>
 // ========= CONFIG =========
+// Polyfill mínimo para CSS3DObject si el script de examples o el fallback no lo exponen
+(function ensureCSS3DPolyfill(){
+  if (!window.CSS3DObject && window.THREE && !THREE.CSS3DObject){
+    const C = function(element){
+      THREE.Object3D.call(this);
+      this.element = element; this.element.style.position = 'absolute';
+      this.element.style.transformStyle = 'preserve-3d';
+      this.isCSS3DObject = true;
+    };
+    C.prototype = Object.create(THREE.Object3D.prototype);
+    C.prototype.constructor = C;
+    window.CSS3DObject = C;
+  }
+})();
 const BASE_HEIGHT = 1.6;      // altura ojos
 const WALK_SPEED = 3.2;       // m/s caminar
 const RUN_SPEED  = 6.0;       // m/s correr
@@ -255,6 +269,22 @@ function setupTVScreen(){
   tvState.iframe = iframe; tvState.div = div; tvState.div.style.visibility = 'hidden';
 }
 setupTVScreen();
+// Si el CSS3DRenderer se inicializó después de crear el div de la TV, lo pegamos ahora
+function attachTVDivToScreen(){
+  if (!cssRenderer) return false;
+  const CSS3DObjCtor = (window.CSS3DObject) || (window.THREE && THREE.CSS3DObject);
+  if (!CSS3DObjCtor || !tvState.div) return false;
+  const screen = tv.getObjectByName('tvScreen'); if (!screen) return false;
+  screen.updateMatrixWorld(true);
+  const pos = new THREE.Vector3(); const quat = new THREE.Quaternion();
+  screen.getWorldPosition(pos); screen.getWorldQuaternion(quat);
+  const obj = new CSS3DObjCtor(tvState.div);
+  obj.position.copy(pos); obj.quaternion.copy(quat);
+  const scale = 2.4/960; obj.scale.set(scale, scale, scale);
+  scene.add(obj);
+  tvState.cssObj = obj; return true;
+}
+if (cssRenderer && !tvState.cssObj) attachTVDivToScreen();
 
 window.onYouTubeIframeAPIReady = function(){ tvState.apiReady = true; };
 
@@ -273,14 +303,6 @@ function powerOnTV(){
   tvState.on = true;
   if (tvState.div) tvState.div.style.visibility = 'visible';
   ensureYTPlayer();
-  // Si no hay CSS3D, al menos añadimos el panel al DOM para que se vea (superpuesto) en modo fallback
-  if (!tvState.cssObj && tvState.div && !tvState.div.parentElement){
-    tvState.div.style.position = 'absolute';
-    tvState.div.style.left = '50%'; tvState.div.style.bottom = '24px';
-    tvState.div.style.transform = 'translateX(-50%)';
-    tvState.div.style.pointerEvents = 'auto';
-    document.body.appendChild(tvState.div);
-  }
 }
 function powerOffTV(){ if (tvState.player){ tvState.player.stopVideo(); } tvState.playing=false; tvState.on=false; if (tvState.div) tvState.div.style.visibility='hidden'; }
 function playTV(){ ensureYTPlayer(); if (tvState.player){ tvState.player.playVideo(); tvState.playing=true; } }
@@ -514,6 +536,10 @@ addFrame( 4.0, 2.0,  ROOM_HALF - 0.05, 1.4, 0.9);
   // Nuevas pruebas específicas del bug reportado
   tests.push(['setupTVScreen define div/iframe', !!tvState.div && !!tvState.iframe]);
   tests.push(['Sin referencia a obj fuera de scope', (function(){ try { /* si hubiera referencia inválida lanzaría */ return true; } catch(e){ return false; } })()]);
+  tests.push(['TV pegada (si hay CSS3D)', (function(){
+  const hasCss3d = !!(window.CSS3DRenderer || (window.THREE && THREE.CSS3DRenderer));
+  return hasCss3d ? !!tvState.cssObj : true;
+})()]);
   const ok = tests.every(t=>t[1]);
   console.log('%cSelf-tests', 'color:#9cf');
   for (const [name, pass] of tests){ console.log((pass?'✅':'❌')+' '+name); }
