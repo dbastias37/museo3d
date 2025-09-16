@@ -84,13 +84,18 @@ renderer.domElement.setAttribute('tabindex', '0');
 renderer.domElement.focus();
 
 // CSS3D renderer (para incrustar iframe de YouTube en la TV)
-const cssRenderer = new THREE.CSS3DRenderer();
-cssRenderer.setSize(window.innerWidth, window.innerHeight);
-cssRenderer.domElement.style.position = 'absolute';
-cssRenderer.domElement.style.top = '0';
-cssRenderer.domElement.style.left = '0';
-cssRenderer.domElement.style.pointerEvents = 'none';
-document.body.appendChild(cssRenderer.domElement);
+let cssRenderer = null;
+try{
+  if (THREE.CSS3DRenderer){
+    cssRenderer = new THREE.CSS3DRenderer();
+    if (cssRenderer) cssRenderer.setSize(window.innerWidth, window.innerHeight);
+    cssRenderer.domElement.style.position = 'absolute';
+    cssRenderer.domElement.style.top = '0';
+    cssRenderer.domElement.style.left = '0';
+    cssRenderer.domElement.style.pointerEvents = 'none';
+    document.body.appendChild(cssRenderer.domElement);
+  }
+}catch(e){ console.warn('CSS3DRenderer no disponible:', e); }
 
 // ========= ILUMINACIÓN =========
 const hemi = new THREE.HemisphereLight(0xffffff, 0x303040, 0.65); scene.add(hemi);
@@ -185,7 +190,7 @@ function createTVCabinet(){
   const post = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1.1, 0.12), matMetal); post.position.set(0, 0.3 + 1.1/2, -0.20); post.castShadow = post.receiveShadow = true; g.add(post);
   const bracket = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.08, 0.08), matMetal); bracket.position.set(0, 0.3 + 1.1, -0.24); bracket.castShadow = bracket.receiveShadow = true; g.add(bracket);
   const screenBody = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.35, 0.08), matScreen);
-screenBody.name = 'tvScreen'; screenBody.position.set(0, 0.3 + 1.1 + 0.3, -0.28); screenBody.castShadow = true; screenBody.receiveShadow = true; g.add(screenBody);
+  screenBody.name = 'tvScreen'; screenBody.position.set(0, 0.3 + 1.1 + 0.3, -0.28); screenBody.castShadow = true; screenBody.receiveShadow = true; g.add(screenBody);
   const bezel = new THREE.Mesh(new THREE.BoxGeometry(2.42, 1.37, 0.02), new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.4, metalness: 0.6 }));
   bezel.position.set(0, 0.3 + 1.1 + 0.3, -0.23); g.add(bezel);
   return g;
@@ -300,12 +305,27 @@ function onKey(e, down){
 window.addEventListener('keydown', e => onKey(e, true));
 window.addEventListener('keyup',   e => onKey(e, false));
 
-let usingPointerLock = false; let dragging = false;
+let usingPointerLock = false; let dragging = false; let entered = false;
 function lockPointer(){ if (document.pointerLockElement === renderer.domElement) return; renderer.domElement.requestPointerLock?.(); }
 function unlockPointer(){ if (document.pointerLockElement) document.exitPointerLock?.(); }
 
-document.addEventListener('pointerlockchange', () => { usingPointerLock = (document.pointerLockElement === renderer.domElement); if (usingPointerLock) hideOverlay(); else showOverlay(true); });
-document.addEventListener('pointerlockerror', () => { usingPointerLock = false; hideOverlay(); });
+document.addEventListener('pointerlockchange', () => {
+  usingPointerLock = (document.pointerLockElement === renderer.domElement);
+  if (usingPointerLock) {
+    hideOverlay();
+    notice.hidden = true;
+  } else {
+    // Si ya "entramos" pero no hay pointer lock (sandbox), mantenemos overlay oculto y mostramos aviso
+    if (entered) { hideOverlay(); notice.hidden = false; }
+    else { showOverlay(true); }
+  }
+});
+
+document.addEventListener('pointerlockerror', () => {
+  usingPointerLock = false;
+  // En sandbox puede fallar el pointer lock; seguimos en modo arrastre
+  if (entered) { hideOverlay(); notice.hidden = false; }
+});
 
 renderer.domElement.addEventListener('mousedown', (e) => { if (!usingPointerLock && e.button === 0) dragging = true; });
 renderer.domElement.addEventListener('mouseup',   () => { dragging = false; });
@@ -324,9 +344,25 @@ renderer.domElement.addEventListener('mousemove', handleMouseMove);
 const interactUI = document.getElementById('interaction');
 const raycaster = new THREE.Raycaster();
 const ndc = new THREE.Vector2(0,0);
-let lastHover = null;
+let interactCurrent = null;
+
+function performAction(){
+  if (!interactCurrent) return;
+  if (interactCurrent.type === 'door'){
+    toggleDoor(interactCurrent.ref);
+  } else if (interactCurrent.type === 'tv'){
+    const a = interactCurrent.action;
+    if (a === 'powerOn') powerOnTV();
+    else if (a === 'powerOff') powerOffTV();
+    else if (a === 'play') playTV();
+    else if (a === 'pause') pauseTV();
+  }
+}
+interactUI.addEventListener('click', () => { performAction(); });
+
 function updateInteraction(){
-  // 1) Intento de interacción por raycast (puertas)
+  interactCurrent = null;
+  // 1) Raycast para puertas en el centro de la mira
   raycaster.setFromCamera(ndc, camera);
   const meshes = interactables.map(i => i.mesh);
   const hits = raycaster.intersectObjects(meshes, false);
@@ -335,37 +371,34 @@ function updateInteraction(){
     if (item && item.type==='door'){
       interactUI.textContent = item.ref.isOpen ? 'Cerrar' : 'Abrir';
       interactUI.hidden = false;
-      if (keys.interact){ toggleDoor(item.ref); keys.interact = false; }
-      return; // prioridad a puertas si están al centro de la mira
+      interactCurrent = { type:'door', ref:item.ref };
+      if (keys.interact){ performAction(); keys.interact = false; }
+      return;
     }
   }
-
-  // 2) Interacción con TV por proximidad y ángulo (sin necesidad de raycast sobre pantalla)
+  // 2) TV por proximidad y orientación
   const tvPos = new THREE.Vector3(); tv.getWorldPosition(tvPos);
   const forward = new THREE.Vector3(0,0,-1).applyQuaternion(tv.quaternion).normalize();
   const toPlayer = new THREE.Vector3().subVectors(player.position, tvPos); const dist = toPlayer.length(); toPlayer.y = 0; toPlayer.normalize();
-  const dot = forward.dot(toPlayer); // >0 frente, <0 detrás
+  const dot = forward.dot(toPlayer);
 
-  let label = null;
   if (dist < 4.5 && dot > 0.25){
-    // Frente a la TV
-    if (!tvState.on) label = 'Encender';
-    else label = tvState.playing ? 'Pause' : 'Play';
-    if (keys.interact){ if (!tvState.on) powerOnTV(); else if (tvState.playing) pauseTV(); else playTV(); keys.interact = false; }
-  } else if (dist < 2.2 && dot < -0.25){
-    // Detrás de la TV, cerca
-    label = 'Desconectar';
-    if (keys.interact){ powerOffTV(); keys.interact = false; }
+    if (!tvState.on){ interactUI.textContent = 'Encender'; interactCurrent = { type:'tv', action:'powerOn' }; }
+    else if (tvState.playing){ interactUI.textContent = 'Pause'; interactCurrent = { type:'tv', action:'pause' }; }
+    else { interactUI.textContent = 'Play'; interactCurrent = { type:'tv', action:'play' }; }
+    interactUI.hidden = false;
+    if (keys.interact){ performAction(); keys.interact = false; }
+    return;
   }
-
-  if (label){ interactUI.textContent = label; interactUI.hidden = false; }
-  else { interactUI.hidden = true; }
+  if (dist < 2.2 && dot < -0.25){
+    interactUI.textContent = 'Desconectar';
+    interactUI.hidden = false;
+    interactCurrent = { type:'tv', action:'powerOff' };
+    if (keys.interact){ performAction(); keys.interact = false; }
+    return;
+  }
+  interactUI.hidden = true;
 }
-  } else { lastHover = null; interactUI.hidden = true; }
-}
-function toggleDoor(door){ door.target = door.isOpen ? 0 : door.dir * Math.PI/2; door.isOpen = !door.isOpen; }
-function updateDoors(dt){ for(const d of doors){ const diff = d.target - d.angle; if (Math.abs(diff) < 0.001) continue; const step = Math.sign(diff) * Math.min(Math.abs(diff), dt * 2.5); d.angle += step; d.hinge.rotation.y = d.angle; } }
-
 // ========= AUDIO TV (atenuación por distancia) =========
 function updateTVAudio(){
   if (!tvState.player || !tvState.on) return;
@@ -385,7 +418,7 @@ const startBtn = document.getElementById('start');
 const notice = document.getElementById('notice');
 function hideOverlay(){ overlay.style.display = 'none'; notice.hidden = true; }
 function showOverlay(showNotice=true){ overlay.style.display = 'grid'; notice.hidden = !showNotice; }
-startBtn.addEventListener('click', () => { hideOverlay(); lockPointer(); });
+startBtn.addEventListener('click', () => { entered = true; hideOverlay(); lockPointer(); });
 const sensSlider = document.getElementById('sens'); const sensVal = document.getElementById('sensVal');
 sensSlider.addEventListener('input', () => { sensMul = parseFloat(sensSlider.value); sensVal.textContent = sensMul.toFixed(1) + '×'; });
 renderer.domElement.addEventListener('click', () => { if (!usingPointerLock) lockPointer(); });
@@ -398,6 +431,15 @@ function canMoveTo(nx, nz){
   const PLAYER_RADIUS = 0.35, PLAYER_HEIGHT = 1.8; const pb = new THREE.Box3(new THREE.Vector3(nx - PLAYER_RADIUS, 0, nz - PLAYER_RADIUS), new THREE.Vector3(nx + PLAYER_RADIUS, PLAYER_HEIGHT, nz + PLAYER_RADIUS));
   return !intersectsAny(pb);
 }
+function updateDoors(dt){
+  for(const d of doors){
+    const diff = d.target - d.angle; if (Math.abs(diff) < 0.001) continue;
+    const step = Math.sign(diff) * Math.min(Math.abs(diff), dt * 2.5);
+    d.angle += step; d.hinge.rotation.y = d.angle;
+  }
+}
+function toggleDoor(door){ door.target = door.isOpen ? 0 : door.dir * Math.PI/2; door.isOpen = !door.isOpen; }
+
 function animate(){
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.033);
@@ -410,12 +452,12 @@ function animate(){
   player.position.x = nx; player.position.z = nz;
   if (hasInput){ bobPhase += dt * 7.0; const bob = Math.sin(bobPhase) * 0.035; player.position.y = BASE_HEIGHT + bob; } else { bobPhase = 0; player.position.y += (BASE_HEIGHT - player.position.y) * Math.min(1, dt * 6); }
   renderer.render(scene, camera);
-  cssRenderer.render(scene, camera);
+  if (cssRenderer) cssRenderer.render(scene, camera);
 }
 applyLook(); animate();
 
 // ========= RESPONSIVO =========
-window.addEventListener('resize', () => { camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); cssRenderer.setSize(window.innerWidth, window.innerHeight); });
+window.addEventListener('resize', () => { camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); if (cssRenderer) cssRenderer.setSize(window.innerWidth, window.innerHeight); });
 
 // ========= DECORACIÓN =========
 function addFrame(x, y, z, w=1.2, h=0.8){ const frame = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.04), new THREE.MeshStandardMaterial({ color: 0x2b2f38, roughness: 0.8, metalness: 0.2 })); frame.position.set(x, y, z); frame.castShadow = true; scene.add(frame); addObstacleFromObject(frame); }
@@ -423,6 +465,20 @@ addFrame(-4.0, 2.0, -ROOM_HALF + 0.05, 1.4, 0.9);
 addFrame( 4.0, 2.0, -ROOM_HALF + 0.05, 1.4, 0.9);
 addFrame(-4.0, 2.0,  ROOM_HALF - 0.05, 1.4, 0.9);
 addFrame( 4.0, 2.0,  ROOM_HALF - 0.05, 1.4, 0.9);
+
+// ========= PRUEBAS RÁPIDAS (en consola) =========
+(function selfTests(){
+  const tests = [];
+  tests.push(['THREE cargado', !!window.THREE]);
+  tests.push(['Escena creada', scene && scene.type === 'Scene']);
+  tests.push(['TV presente', !!tv && !!tv.getObjectByName('tvScreen')]);
+  tests.push(['Puertas creadas', doors.length === 2]);
+  tests.push(['updateInteraction existe', typeof updateInteraction === 'function']);
+  const ok = tests.every(t=>t[1]);
+  console.log('%cSelf-tests', 'color:#9cf');
+  for (const [name, pass] of tests){ console.log((pass?'✅':'❌')+' '+name); }
+  if (!ok) console.warn('Alguna prueba falló; revisa arriba.');
+})();
 </script>
 </body>
 </html>
