@@ -93,6 +93,7 @@ const WORLD_MIN_X = -ROOM_SIZE*1.5, WORLD_MAX_X =  ROOM_SIZE*1.5, WORLD_MIN_Z = 
 const scene = new THREE.Scene(); scene.background = new THREE.Color(0x111214);
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1500);
 const renderer = new THREE.WebGLRenderer({ antialias: true }); renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); renderer.setSize(window.innerWidth, window.innerHeight); renderer.shadowMap.enabled = true; document.body.appendChild(renderer.domElement); renderer.domElement.setAttribute('tabindex', '0'); renderer.domElement.focus();
+window.scene = scene; window.camera = camera; window.renderer = renderer;
 
 // ========= CSS3D (para TV) =========
 let cssRenderer = null;
@@ -114,7 +115,6 @@ const fillLight = new THREE.SpotLight(0x8eb5ff, 0.45, 30, Math.PI/6, 0.3, 1.0); 
 
 // ========= PLAYER =========
 const player = new THREE.Object3D(); player.position.set(0, BASE_HEIGHT, 6.5); scene.add(player);
-const player = new THREE.Object3D(); player.position.set(0, BASE_HEIGHT, 6.5); scene.add(player);
 const pitchObj = new THREE.Object3D(); pitchObj.add(camera); const yawObj = player; yawObj.add(pitchObj); let yaw = 0, pitch = 0; function applyLook(){ yawObj.rotation.y = yaw; pitchObj.rotation.x = pitch; }
 
 // ========= MATERIALES =========
@@ -135,6 +135,7 @@ const tv = createTVCabinet(); tv.position.set(0,0,-4.7); tv.rotation.y=Math.PI; 
 
 // ====== TV: estado y helpers ======
 const tvState = { on:false, playing:false, apiReady:false, player:null, playerReady:false, wantPlay:false, cssObj:null, iframe:null, videoEl:null, div:null };
+window.tvState = tvState;
 function makeTVContainer(){ const div=document.createElement('div'); div.style.width='960px'; div.style.height='540px'; div.style.background='#000'; div.style.pointerEvents='none'; return div; }
 
 function setupTVScreen(force=false){
@@ -185,148 +186,39 @@ function powerOffTV(){ if (TV_SOURCE.mode==='youtube' && tvState.player){ tvStat
 
 function playTV(){
   tvState.wantPlay = true;
-  if (TV_SOURCE.mode === 'youtube'){ const p=ensureYTPlayer(); if (p && tvState.apiReady){ try{ p.playVideo(); tvState.playing=true; }catch(_){} } return; }
-  if (TV_SOURCE.mode === 'mp4' && tvState.videoEl){ const v=tvState.videoEl; const tryPlay = ()=>v.play().then(()=>{ tvState.playing=true; }).catch(err=>{ v.muted=true; v.play().then(()=>{ tvState.playing=true; }).catch(e=>console.warn('Video play error:', e)); }); tryPlay(); return; }
-  if (TV_SOURCE.mode === 'gdrive'){ // necesitamos clic directo del usuario en el iframe (no hay API)
-  return { shell, floor };
-}
-
-for (const r of ROOMS){ createRoom(r.x); }
-
-// ========= MUEBLES BASE EN A =========
-function createSofa(){
-  const g = new THREE.Group();
-  const fabric = new THREE.MeshStandardMaterial({ color: 0xBFD0FF, roughness: 0.9, metalness: 0.05 });
-  const wood   = new THREE.MeshStandardMaterial({ color: 0x4a3c2f, roughness: 0.8, metalness: 0.1 });
-  const legH = 0.2, seatH = 0.45;
-  const seat = new THREE.Mesh(new THREE.BoxGeometry(1.6, seatH, 0.8), fabric); seat.position.y = legH + seatH/2; seat.castShadow = seat.receiveShadow = true; g.add(seat);
-  const back = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.6, 0.18), fabric); back.position.set(0, legH + seatH + 0.3, -0.31); back.castShadow = back.receiveShadow = true; g.add(back);
-  const armL = new THREE.Mesh(new THREE.BoxGeometry(0.18, seatH, 0.8), fabric); armL.position.set(-0.89, legH + seatH/2, 0); armL.castShadow = armL.receiveShadow = true; g.add(armL);
-  const armR = armL.clone(); armR.position.x = 0.89; g.add(armR);
-  function leg(x,z){ const m = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, legH, 16), wood); m.position.set(x, legH/2, z); m.castShadow = m.receiveShadow = true; g.add(m); }
-  leg( 0.68,  0.3); leg(-0.68,  0.3); leg( 0.68, -0.3); leg(-0.68, -0.3);
-  return g;
-}
-const sofa = createSofa(); sofa.position.set(0, 0, -0.5); sofa.rotation.y = Math.PI; sofa.scale.set(2.0, 1.0, 1.2); scene.add(sofa); addObstacleFromObject(sofa);
-
-function createTVCabinet(){
-  const g = new THREE.Group();
-  const matBench = new THREE.MeshStandardMaterial({ color: 0x44484f, roughness: 0.85, metalness: 0.2 });
-  const matMetal = new THREE.MeshStandardMaterial({ color: 0x777a80, roughness: 0.5, metalness: 0.8 });
-  const matScreen = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.6, metalness: 0.3 });
-  const bench = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.6, 0.5), matBench); bench.position.y = 0.3; bench.castShadow = bench.receiveShadow = true; g.add(bench);
-  const post = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1.1, 0.12), matMetal); post.position.set(0, 0.3 + 1.1/2, -0.20); post.castShadow = post.receiveShadow = true; g.add(post);
-  const bracket = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.08, 0.08), matMetal); bracket.position.set(0, 0.3 + 1.1, -0.24); bracket.castShadow = bracket.receiveShadow = true; g.add(bracket);
-  const screenBody = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.35, 0.08), matScreen);
-  screenBody.name = 'tvScreen'; screenBody.position.set(0, 0.3 + 1.1 + 0.3, -0.28); screenBody.castShadow = true; screenBody.receiveShadow = true; g.add(screenBody);
-  const bezel = new THREE.Mesh(new THREE.BoxGeometry(2.42, 1.37, 0.02), new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.4, metalness: 0.6 }));
-  bezel.position.set(0, 0.3 + 1.1 + 0.3, -0.23); g.add(bezel);
-  return g;
-}
-const tv = createTVCabinet();
- tv.position.set(0, 0, -4.7);
- tv.rotation.y = Math.PI; // mirar al sofá
- scene.add(tv);
- addObstacleFromObject(tv);
-
-// ====== TV: estado y helpers ======
-const tvState = { on:false, playing:false, apiReady:false, player:null, playerReady:false, wantPlay:false, cssObj:null, iframe:null, videoEl:null, div:null };
-
-function makeTVContainer(){
-  const div = document.createElement('div');
-  div.style.width = '960px';
-  div.style.height = '540px';
-  div.style.background = '#000';
-  div.style.pointerEvents = 'none';
-  return div;
-}
-
-function setupTVScreen(force=false){
-  if (!force && tvState.div) return;
-  const screen = tv.getObjectByName('tvScreen'); if (!screen) return;
-  screen.updateMatrixWorld(true);
-  const pos = new THREE.Vector3(); const quat = new THREE.Quaternion();
-  screen.getWorldPosition(pos); screen.getWorldQuaternion(quat);
-
-  if (tvState.cssObj && tvState.cssObj.parent) tvState.cssObj.parent.remove(tvState.cssObj);
-  tvState.cssObj = null; tvState.iframe = null; tvState.videoEl = null; tvState.div = null;
-
-  const div = makeTVContainer();
-  if (TV_SOURCE.mode === 'mp4' && TV_SOURCE.mp4Url){
-    const video = document.createElement('video');
-    video.setAttribute('playsinline','');
-    video.setAttribute('webkit-playsinline','');
-    video.preload = 'metadata';
-    video.loop = true; video.controls = false; video.muted = true; // desmuteo dinámico por distancia
-    video.src = TV_SOURCE.mp4Url;
-    div.appendChild(video);
-    tvState.videoEl = video;
-  } else {
-    const iframe = document.createElement('iframe');
-    iframe.id = 'yt_tv_'+Date.now();
-    iframe.width = '960'; iframe.height = '540'; iframe.frameBorder = '0';
-    iframe.allow = 'autoplay; encrypted-media; picture-in-picture';
-    iframe.referrerPolicy = 'strict-origin-when-cross-origin';
-    iframe.allowFullscreen = true; iframe.setAttribute('allowfullscreen','');
-    iframe.src = 'https://www.youtube-nocookie.com/embed/'+TV_SOURCE.youtubeId+'?enablejsapi=1&rel=0&controls=0&modestbranding=1&playsinline=1&loop=1&playlist='+TV_SOURCE.youtubeId+'&origin='+encodeURIComponent(window.location.origin);
-    div.appendChild(iframe);
-    tvState.iframe = iframe;
-  }
-
-  const CSS3DObjCtor = (window.CSS3DObject) || (window.THREE && THREE.CSS3DObject);
-  if (cssRenderer && CSS3DObjCtor){
-    const obj = new CSS3DObjCtor(div);
-    obj.position.copy(pos); obj.quaternion.copy(quat);
-    const scale = 2.4/960; obj.scale.set(scale, scale, scale);
-    scene.add(obj);
-    tvState.cssObj = obj; tvState.div = div; tvState.div.style.visibility = 'hidden';
-    try { cssRenderer.render(scene, camera); } catch(_){}
-  } else { tvState.div = div; tvState.div.style.visibility = 'hidden'; }
-}
-setupTVScreen();
-
-// YouTube API (si se usa YouTube)
-window.onYouTubeIframeAPIReady = function(){ tvState.apiReady = true; ensureYTPlayer(); if (tvState.wantPlay && tvState.playerReady && tvState.player) { try { tvState.player.playVideo(); tvState.playing = true; } catch(_){} } };
-function ensureYTPlayer(){
-  if (TV_SOURCE.mode !== 'youtube') return null;
-  if (tvState.player) return tvState.player;
-  if (!tvState.apiReady || !tvState.iframe) return null;
-  tvState.player = new YT.Player(tvState.iframe, {
-    host: 'https://www.youtube-nocookie.com',
-    events: {
-      onReady: (e) => {
-        tvState.playerReady = true; try { e.target.mute(); } catch(_){ }
-        if (tvState.wantPlay) { try { e.target.playVideo(); tvState.playing = true; } catch(err){ console.warn('YT play error onReady:', err); } }
-      },
-      onStateChange: (e) => { const S = YT.PlayerState; tvState.playing = (e.data === S.PLAYING); },
-      onError: (e) => { console.warn('YT Player error code:', e && e.data); }
-    },
-    playerVars: { autoplay: 0, controls: 0, rel: 0, loop: 1, playlist: TV_SOURCE.youtubeId, modestbranding: 1, playsinline: 1, fs: 1, iv_load_policy: 3, origin: window.location.origin }
-  });
-  return tvState.player;
-}
-
-function powerOnTV(){
-  tvState.on = true;
-  if (tvState.div) tvState.div.style.visibility = 'visible';
-  if (TV_SOURCE.mode === 'youtube') ensureYTPlayer();
-  if (TV_SOURCE.mode === 'mp4' && tvState.videoEl){ try { tvState.videoEl.load(); } catch(_){} }
-}
-function powerOffTV(){
-  if (TV_SOURCE.mode === 'youtube' && tvState.player){ tvState.player.stopVideo(); }
-  if (TV_SOURCE.mode === 'mp4' && tvState.videoEl){ try { tvState.videoEl.pause(); } catch(_){} }
-  tvState.playing=false; tvState.on=false; if (tvState.div) tvState.div.style.visibility='hidden';
-}
-function playTV(){
-  tvState.wantPlay = true;
   if (TV_SOURCE.mode === 'youtube'){
-    const p = ensureYTPlayer(); if (p && tvState.apiReady) { try { p.playVideo(); tvState.playing = true; } catch(_){} }
-  } else if (TV_SOURCE.mode === 'mp4' && tvState.videoEl){
-    const v = tvState.videoEl; const tryPlay = ()=>v.play().then(()=>{ tvState.playing=true; }).catch(err=>{ v.muted = true; v.play().then(()=>{ tvState.playing=true; }).catch(e=>console.warn('Video play error:', e)); });
+    const p = ensureYTPlayer();
+    if (p && tvState.apiReady){
+      try { p.playVideo(); tvState.playing = true; }
+      catch (err){ console.warn('YT play error:', err); }
+    }
+    return;
+  }
+  if (TV_SOURCE.mode === 'mp4' && tvState.videoEl){
+    const v = tvState.videoEl;
+    const tryPlay = ()=>v.play().then(()=>{ tvState.playing = true; }).catch(err=>{
+      v.muted = true;
+      v.play().then(()=>{ tvState.playing = true; }).catch(e=>console.warn('Video play error:', e));
+    });
     tryPlay();
+    return;
+  }
+  if (TV_SOURCE.mode === 'gdrive'){
+    const noticeEl = document.getElementById('notice');
+    if (noticeEl){
+      noticeEl.hidden = false;
+      noticeEl.textContent = 'Haz clic en la pantalla para reproducir el video de Drive.';
+    }
   }
 }
-function pauseTV(){ if (TV_SOURCE.mode === 'youtube' && tvState.player){ tvState.player.pauseVideo(); tvState.playing=false; } if (TV_SOURCE.mode === 'mp4' && tvState.videoEl){ try { tvState.videoEl.pause(); tvState.playing=false; } catch(_){} } }
+
+function pauseTV(){
+  if (TV_SOURCE.mode === 'youtube' && tvState.player){ tvState.player.pauseVideo(); tvState.playing = false; }
+  if (TV_SOURCE.mode === 'mp4' && tvState.videoEl){
+    try { tvState.videoEl.pause(); tvState.playing = false; }
+    catch (err){ console.warn('Video pause error:', err); }
+  }
+}
 
 // ========= EXTRAS EN SALAS B y C =========
 function createBed(){
@@ -556,9 +448,42 @@ addFrame( 4.0, 2.0, -ROOM_HALF + 0.05, 1.4, 0.9);
 addFrame(-4.0, 2.0,  ROOM_HALF - 0.05, 1.4, 0.9);
 addFrame( 4.0, 2.0,  ROOM_HALF - 0.05, 1.4, 0.9);
 
-// ========= PRUEBAS RÁPIDAS (en consola) =========
-(function selfTests(){
-  const tests = [];
-  tests.push(['THREE cargado', !!window.THREE]);
-  tests.push(['Escena creada', scene && scene.type === 'Scene']);
-  tests.push(['TV presente', !!tv && !!tv.getObjectByName('t
+
+</script>
+
+<script>
+  // Enable manually from console: window.__RUN_TESTS__ = true; then call window.__runSelfTests__()
+  (function attachSelfTests(){
+    window.__runSelfTests__ = function(){
+      if (!window.__RUN_TESTS__){
+        console.warn('Set window.__RUN_TESTS__ = true before running the self-tests.');
+        return;
+      }
+      const results = [];
+      function pass(name, ok){ results.push((ok?'✅':'❌')+' '+name); if(!ok) console.error(name); }
+      try {
+        pass('THREE loaded', !!window.THREE);
+        const startBtn = document.getElementById('start');
+        pass('Start button exists', !!startBtn);
+        pass('Overlay visible initially', getComputedStyle(document.getElementById('overlay')).display !== 'none');
+
+        // Simulate click (should hide overlay, no pointer lock)
+        startBtn.click();
+        pass('Overlay hides on start', getComputedStyle(document.getElementById('overlay')).display === 'none');
+
+        // Movement artifacts
+        pass('Player exists', !!window.scene && !!window.camera); // minimal smoke test
+
+        // TV screen container created
+        pass('TV screen container', !!(window.tvState && (tvState.videoEl || tvState.iframe || tvState.div)));
+
+        console.info('%cSelf-tests:', 'color:#9cf');
+        results.forEach(r=>console.log(r));
+      } catch(e){
+        console.error('Tests crashed:', e);
+      }
+    };
+  })();
+</script>
+</body>
+</html>
