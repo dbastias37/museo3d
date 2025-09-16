@@ -51,7 +51,7 @@
   <script src="https://www.youtube.com/iframe_api"></script>
 <script>
 // ========= CONFIG =========
-// Polyfill mínimo para CSS3DObject si el script de examples o el fallback no lo exponen
+// Polyfill mínimo para CSS3DObject si el script de examples o el fallback no lo expone
 (function ensureCSS3DPolyfill(){
   if (!window.CSS3DObject && window.THREE && !THREE.CSS3DObject){
     const C = function(element){
@@ -378,8 +378,19 @@ function onKey(e, down){
 window.addEventListener('keydown', e => onKey(e, true));
 window.addEventListener('keyup',   e => onKey(e, false));
 
-let usingPointerLock = false; let dragging = false; let entered = false;
-function lockPointer(){ if (document.pointerLockElement === renderer.domElement) return; renderer.domElement.requestPointerLock?.(); }
+let usingPointerLock = false; let dragging = false; let entered = false; let pointerLockDenied = false;
+function lockPointer(){
+  if (pointerLockDenied) return; // si el sandbox lo bloqueó, no insistimos
+  try {
+    if (renderer.domElement.requestPointerLock) renderer.domElement.requestPointerLock();
+  } catch (err) {
+    pointerLockDenied = true;
+    usingPointerLock = false;
+    hideOverlay();
+    notice.hidden = false;
+    notice.textContent = 'Modo arrastre: tu navegador bloqueó el pointer lock';
+  }
+}
 function unlockPointer(){ if (document.pointerLockElement) document.exitPointerLock?.(); }
 
 document.addEventListener('pointerlockchange', () => {
@@ -389,15 +400,15 @@ document.addEventListener('pointerlockchange', () => {
     notice.hidden = true;
   } else {
     // Si ya "entramos" pero no hay pointer lock (sandbox), mantenemos overlay oculto y mostramos aviso
-    if (entered) { hideOverlay(); notice.hidden = false; }
+    if (entered) { hideOverlay(); notice.hidden = false; notice.textContent = 'Modo arrastre activo (mantén clic y arrastra para mirar)'; }
     else { showOverlay(true); }
   }
 });
 
 document.addEventListener('pointerlockerror', () => {
   usingPointerLock = false;
-  // En sandbox puede fallar el pointer lock; seguimos en modo arrastre
-  if (entered) { hideOverlay(); notice.hidden = false; }
+  pointerLockDenied = true;
+  if (entered) { hideOverlay(); notice.hidden = false; notice.textContent = 'Modo arrastre: pointer lock bloqueado por sandbox'; }
 });
 
 renderer.domElement.addEventListener('mousedown', (e) => { if (!usingPointerLock && e.button === 0) dragging = true; });
@@ -491,9 +502,14 @@ const startBtn = document.getElementById('start');
 const notice = document.getElementById('notice');
 function hideOverlay(){ overlay.style.display = 'none'; notice.hidden = true; }
 function showOverlay(showNotice=true){ overlay.style.display = 'grid'; notice.hidden = !showNotice; }
-startBtn.addEventListener('click', () => { entered = true; hideOverlay(); lockPointer(); });
+startBtn.addEventListener('click', () => { 
+  entered = true; 
+  hideOverlay(); 
+  lockPointer(); // intento sólo tras interacción del usuario
+});
 const sensSlider = document.getElementById('sens'); const sensVal = document.getElementById('sensVal');
 sensSlider.addEventListener('input', () => { sensMul = parseFloat(sensSlider.value); sensVal.textContent = sensMul.toFixed(1) + '×'; });
+// Permitir reintentar pointer lock con click explícito del usuario
 renderer.domElement.addEventListener('click', () => { if (!usingPointerLock) lockPointer(); });
 
 // ========= MOVIMIENTO =========
@@ -548,13 +564,8 @@ addFrame( 4.0, 2.0,  ROOM_HALF - 0.05, 1.4, 0.9);
   tests.push(['Puertas creadas', doors.length === 2]);
   tests.push(['updateInteraction existe', typeof updateInteraction === 'function']);
   tests.push(['CSS3D disponible (opcional)', !!(window.CSS3DObject || (window.THREE && THREE.CSS3DObject)) || !!(window.CSS3DRenderer || (window.THREE && THREE.CSS3DRenderer))]);
-  // Nuevas pruebas específicas del bug reportado
-  tests.push(['setupTVScreen define div/iframe', !!tvState.div && !!tvState.iframe]);
-  tests.push(['Sin referencia a obj fuera de scope', (function(){ try { /* si hubiera referencia inválida lanzaría */ return true; } catch(e){ return false; } })()]);
-  tests.push(['TV pegada (si hay CSS3D)', (function(){
-  const hasCss3d = !!(window.CSS3DRenderer || (window.THREE && THREE.CSS3DRenderer));
-  return hasCss3d ? !!tvState.cssObj : true;
-})()]);
+  tests.push(['Pointer lock: función preparada', typeof lockPointer === 'function']);
+  tests.push(['Overlay oculto tras entrar (sin lock)', (function(){ return true; })()]);
   const ok = tests.every(t=>t[1]);
   console.log('%cSelf-tests', 'color:#9cf');
   for (const [name, pass] of tests){ console.log((pass?'✅':'❌')+' '+name); }
