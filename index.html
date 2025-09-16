@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Museo 3D – Primera Persona (Mouse + WASD)</title>
+  <style>
+    html, body { height: 100%; margin: 0; overflow: hidden; background: #0f0f12; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+    #overlay { position: fixed; inset: 0; display: grid; place-items: center; background: radial-gradient(1200px 600px at 50% 40%, rgba(255,255,255,0.06), rgba(0,0,0,0.92)); color: #eaeaea; z-index: 10; }
+    .panel { text-align: center; padding: 2rem 2.5rem; border: 1px solid rgba(255,255,255,0.12); border-radius: 16px; background: rgba(20,20,24,0.66); backdrop-filter: blur(6px); }
+    .panel h1 { margin: 0 0 .5rem; font-size: clamp(20px, 5vw, 28px); letter-spacing: .3px; }
+    .panel p { margin: .25rem 0; color: #c9c9d1; font-size: 14px; }
+    .btn { margin-top: 1rem; background: #6e7cff; color: white; border: none; padding: .75rem 1rem; border-radius: 10px; font-weight: 600; cursor: pointer; }
+    .btn:hover { filter: brightness(1.08); }
+    #hud { position: fixed; left: 12px; bottom: 12px; color: #bfc3ff; font-size: 12px; line-height: 1.35; opacity: .9; z-index: 2; user-select: none; }
+    #hud kbd { background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.15); padding: 2px 6px; border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    #notice { position: fixed; top: 10px; right: 12px; color: #ddd; font-size: 12px; opacity: .85; z-index: 2; }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+  <div id="overlay">
+    <div class="panel">
+      <h1>Museo 3D – Vista en Primera Persona</h1>
+      <p>Haz clic para entrar y bloquear el mouse.</p>
+      <p>Movimiento: <kbd>W</kbd> adelante · <kbd>S</kbd> atrás · <kbd>A</kbd> izquierda · <kbd>D</kbd> derecha</p>
+      <p>Mirar: mueve el mouse · Salir del bloqueo: <kbd>Esc</kbd></p>
+      <button id="start" class="btn">Entrar al museo</button>
+    </div>
+  </div>
+  <div id="hud">WASD para moverte · Mouse para mirar</div>
+  <div id="notice" hidden>Click para volver a entrar</div>
+
+  <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/controls/PointerLockControls.js"></script>
+<script>
+    // --- Escena básica ---
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x111214);
+
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    document.body.appendChild(renderer.domElement);
+
+    // --- Iluminación ---
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x303040, 0.5);
+    scene.add(hemi);
+
+    const keyLight = new THREE.DirectionalLight(0xffffff, 1.0);
+    keyLight.position.set(5, 8, 4);
+    keyLight.castShadow = true;
+    keyLight.shadow.mapSize.set(1024, 1024);
+    scene.add(keyLight);
+
+    const fillLight = new THREE.SpotLight(0x8eb5ff, 0.45, 30, Math.PI / 6, 0.3, 1.0);
+    fillLight.position.set(-4, 6, -5);
+    fillLight.castShadow = true;
+    scene.add(fillLight);
+
+    // --- Controles en primera persona ---
+    const controls = new THREE.PointerLockControls(camera, document.body);
+    const player = controls.getObject(); // cámara envuelta por los controles
+    scene.add(player);
+
+    const BASE_HEIGHT = 1.6;  // Altura "ojos"
+    player.position.set(0, BASE_HEIGHT, 6.5);
+
+    // --- Sala/museo (habitáculo) ---
+    const ROOM_HALF = 8; // semitamaño de la sala (X y Z)
+
+    // Caja invertida como sala
+    const roomGeo = new THREE.BoxGeometry(ROOM_HALF * 2, 6, ROOM_HALF * 2);
+    const roomMat = new THREE.MeshStandardMaterial({ color: 0x16181d, side: THREE.BackSide, roughness: 0.95, metalness: 0.0 });
+    const room = new THREE.Mesh(roomGeo, roomMat);
+    room.position.y = 3; // centrar altura
+    room.receiveShadow = true;
+    scene.add(room);
+
+    // Suelo
+    const floorGeo = new THREE.PlaneGeometry(ROOM_HALF * 2, ROOM_HALF * 2, 1, 1);
+    const floorMat = new THREE.MeshStandardMaterial({ color: 0x24262b, roughness: 0.9, metalness: 0.05 });
+    const floor = new THREE.Mesh(floorGeo, floorMat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    scene.add(floor);
+
+    // Sutil patrón tipo baldosa
+    const gridHelper = new THREE.GridHelper(ROOM_HALF * 2, 16, 0x2f3340, 0x2f3340);
+    gridHelper.position.y = 0.001; // evitar z-fighting
+    scene.add(gridHelper);
+
+    // --- Pedestal + Cubo de exhibición ---
+    const pedestalGeo = new THREE.CylinderGeometry(0.6, 0.7, 1.0, 24);
+    const pedestalMat = new THREE.MeshStandardMaterial({ color: 0x3a3f4b, roughness: 0.7, metalness: 0.2 });
+    const pedestal = new THREE.Mesh(pedestalGeo, pedestalMat);
+    pedestal.position.set(0, 0.5, -2.5);
+    pedestal.castShadow = true; pedestal.receiveShadow = true;
+    scene.add(pedestal);
+
+    const cubeGeo = new THREE.BoxGeometry(0.9, 0.9, 0.9);
+    const cubeMat = new THREE.MeshPhysicalMaterial({ color: 0xa9b3ff, roughness: 0.2, metalness: 0.6, transmission: 0.0, clearcoat: 0.6, clearcoatRoughness: 0.35 });
+    const artCube = new THREE.Mesh(cubeGeo, cubeMat);
+    artCube.position.set(0, 1.45, -2.5);
+    artCube.castShadow = true; artCube.receiveShadow = true;
+    scene.add(artCube);
+
+    // Luz puntual sobre la obra
+    const artLight = new THREE.SpotLight(0xffffff, 1.2, 12, Math.PI/10, 0.4, 1);
+    artLight.position.set(0.8, 4.5, -1.8);
+    artLight.target = artCube;
+    artLight.castShadow = true;
+    scene.add(artLight); scene.add(artLight.target);
+
+    // --- Colisiones simples (paredes y pedestal/obra) ---
+    const obstacles = [];
+    function addObstacleFromObject(obj){
+      obj.updateMatrixWorld(true);
+      const box = new THREE.Box3().setFromObject(obj);
+      obstacles.push(box);
+    }
+    addObstacleFromObject(pedestal);
+    addObstacleFromObject(artCube);
+
+    const PLAYER_RADIUS = 0.35;
+    const PLAYER_HEIGHT = 1.8;
+    const BORDER = 0.15; // margen para las paredes
+
+    function intersectsAny(box){
+      for(const o of obstacles){ if(box.intersectsBox(o)) return true; }
+      return false;
+    }
+
+    function canMoveTo(nx, nz){
+      // límites de sala
+      if (nx < -ROOM_HALF + PLAYER_RADIUS + BORDER || nx > ROOM_HALF - PLAYER_RADIUS - BORDER) return false;
+      if (nz < -ROOM_HALF + PLAYER_RADIUS + BORDER || nz > ROOM_HALF - PLAYER_RADIUS - BORDER) return false;
+      const playerBox = new THREE.Box3(
+        new THREE.Vector3(nx - PLAYER_RADIUS, 0, nz - PLAYER_RADIUS),
+        new THREE.Vector3(nx + PLAYER_RADIUS, PLAYER_HEIGHT, nz + PLAYER_RADIUS)
+      );
+      return !intersectsAny(playerBox);
+    }
+
+    // --- Entrada/overlay (Pointer Lock) ---
+    const overlay = document.getElementById('overlay');
+    const startBtn = document.getElementById('start');
+    const notice = document.getElementById('notice');
+
+    startBtn.addEventListener('click', () => controls.lock());
+
+    controls.addEventListener('lock', () => {
+      overlay.style.display = 'none';
+      notice.hidden = true;
+    });
+
+    controls.addEventListener('unlock', () => {
+      overlay.style.display = 'grid';
+      notice.hidden = false;
+    });
+
+    // --- Entrada de teclado (WASD) ---
+    const keys = { forward:false, back:false, left:false, right:false };
+
+    function onKey(e, down){
+      switch(e.code){
+        case 'KeyW': keys.forward = down; break;
+        case 'KeyS': keys.back = down; break;
+        case 'KeyA': keys.left = down; break;
+        case 'KeyD': keys.right = down; break;
+      }
+    }
+    window.addEventListener('keydown', e => onKey(e, true));
+    window.addEventListener('keyup',   e => onKey(e, false));
+
+    // --- Bambeo/sensación de caminata ---
+    const clock = new THREE.Clock();
+    const SPEED = 3.2; // m/s
+    let bobPhase = 0;  // fase para movimiento vertical
+
+    const tmpForward = new THREE.Vector3();
+    const tmpRight = new THREE.Vector3();
+    const up = new THREE.Vector3(0,1,0);
+
+    function animate(){
+      requestAnimationFrame(animate);
+      const dt = Math.min(clock.getDelta(), 0.033);
+
+      // Dirección de vista
+      camera.getWorldDirection(tmpForward);
+      tmpForward.y = 0; tmpForward.normalize();
+      tmpRight.crossVectors(tmpForward, up).normalize();
+
+      const moveVec = new THREE.Vector3();
+      const hasInput = keys.forward || keys.back || keys.left || keys.right;
+
+      if(keys.forward) moveVec.add(tmpForward);
+      if(keys.back)    moveVec.addScaledVector(tmpForward, -1);
+      if(keys.right)   moveVec.add(tmpRight);
+      if(keys.left)    moveVec.addScaledVector(tmpRight, -1);
+
+      if (hasInput) moveVec.normalize().multiplyScalar(SPEED * dt);
+
+      // Intento de movimiento con resolución por ejes (deslizamiento simple)
+      const curX = player.position.x, curZ = player.position.z;
+      let nx = curX, nz = curZ;
+      if (moveVec.x !== 0) {
+        const tryX = curX + moveVec.x;
+        if (canMoveTo(tryX, curZ)) nx = tryX;
+      }
+      if (moveVec.z !== 0) {
+        const tryZ = curZ + moveVec.z;
+        if (canMoveTo(nx, tryZ)) nz = tryZ;
+      }
+      player.position.x = nx;
+      player.position.z = nz;
+
+      // Cabeceo/bambeo
+      if (hasInput) {
+        bobPhase += dt * 7.0; // frecuencia
+        const bob = Math.sin(bobPhase) * 0.035;
+        player.position.y = BASE_HEIGHT + bob;
+      } else {
+        bobPhase = 0;
+        // volver suave a altura base
+        player.position.y += (BASE_HEIGHT - player.position.y) * Math.min(1, dt * 6);
+      }
+
+      // Animación sutil del cubo
+      artCube.rotation.y += dt * 0.25;
+
+      renderer.render(scene, camera);
+    }
+
+    animate();
+
+    // --- Responsivo ---
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // --- Toques estéticos extra: marcos sutiles en paredes ---
+    function addFrame(x, y, z, w=1.2, h=0.8){
+      const frame = new THREE.Mesh(
+        new THREE.BoxGeometry(w, h, 0.04),
+        new THREE.MeshStandardMaterial({ color: 0x2b2f38, roughness: 0.8, metalness: 0.2 })
+      );
+      frame.position.set(x, y, z);
+      frame.castShadow = true; frame.receiveShadow = false;
+      scene.add(frame);
+      addObstacleFromObject(frame); // también sirve como colisión decorativa sutil
+    }
+    addFrame(-4.0, 2.0, -ROOM_HALF + 0.05, 1.4, 0.9);
+    addFrame( 4.0, 2.0, -ROOM_HALF + 0.05, 1.4, 0.9);
+    addFrame(-4.0, 2.0,  ROOM_HALF - 0.05, 1.4, 0.9);
+    addFrame( 4.0, 2.0,  ROOM_HALF - 0.05, 1.4, 0.9);
+  </script>
+</body>
+</html>
