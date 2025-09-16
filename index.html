@@ -10,8 +10,10 @@
     .panel { text-align: center; padding: 2rem 2.5rem; border: 1px solid rgba(255,255,255,0.12); border-radius: 16px; background: rgba(20,20,24,0.66); backdrop-filter: blur(6px); }
     .panel h1 { margin: 0 0 .5rem; font-size: clamp(20px, 5vw, 28px); letter-spacing: .3px; }
     .panel p { margin: .25rem 0; color: #c9c9d1; font-size: 14px; }
-    .btn { margin-top: 1rem; background: #6e7cff; color: white; border: none; padding: .75rem 1rem; border-radius: 10px; font-weight: 600; cursor: pointer; }
+    .btn { margin-top: .75rem; background: #6e7cff; color: white; border: none; padding: .7rem 1rem; border-radius: 10px; font-weight: 600; cursor: pointer; }
     .btn:hover { filter: brightness(1.08); }
+    .toggle { display:inline-flex; align-items:center; gap:.5rem; margin-top: .5rem; justify-content:center; }
+    .toggle input { width: 18px; height: 18px; }
     #hud { position: fixed; left: 12px; bottom: 12px; color: #bfc3ff; font-size: 12px; line-height: 1.35; opacity: .9; z-index: 2; user-select: none; }
     #hud kbd { background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.15); padding: 2px 6px; border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
     #notice { position: fixed; top: 10px; right: 12px; color: #ddd; font-size: 12px; opacity: .85; z-index: 2; }
@@ -29,6 +31,7 @@
       <p>Haz clic para entrar. Si tu navegador no concede el bloqueo del mouse, <strong>mantén clic y arrastra</strong> para mirar.</p>
       <p>Movimiento: <kbd>W</kbd> adelante · <kbd>S</kbd> atrás · <kbd>A</kbd> izquierda · <kbd>D</kbd> derecha · <kbd>Shift</kbd> correr</p>
       <p>Mirar: mueve el mouse · Salir del bloqueo: <kbd>Esc</kbd></p>
+      <div class="toggle"><input id="lockToggle" type="checkbox" /><label for="lockToggle">Intentar <em>bloqueo del mouse</em> (puede fallar en sandbox)</label></div>
       <button id="start" class="btn">Entrar al museo</button>
     </div>
   </div>
@@ -46,25 +49,35 @@
 
   <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/renderers/CSS3DRenderer.js"></script>
-  <!-- Fallback por si la versión de examples/js no expone correctamente CSS3DObject/CSS3DRenderer -->
   <script src="https://cdn.jsdelivr.net/npm/three-css3drenderer@1.0.1/build/CSS3DRenderer.min.js"></script>
   <script src="https://www.youtube.com/iframe_api"></script>
 <script>
 // ========= CONFIG =========
+// Integramos tu video de Google Drive. Intentaremos reproducirlo como MP4 directo; si el entorno lo bloquea, caemos a "preview" incrustado.
+const DRIVE_ID_DEFAULT = '13fy37YjhFandXawxgUBIxuqTbWADMHwR';
+function driveDownloadURL(id){ return `https://drive.google.com/uc?export=download&id=${id}`; }
+function drivePreviewURL(id){ return `https://drive.google.com/file/d/${id}/preview`; }
+function extractDriveId(url){ const m = (url||'').match(/\/d\/([a-zA-Z0-9_-]+)/); return m?m[1]:null; }
+
+// Fuente de la TV: 'mp4', 'youtube' o 'gdrive' (preview iframe). Por defecto probamos MP4 con tu Drive.
+const TV_SOURCE = { mode: 'mp4', youtubeId: '8s1sh-CRMXc', mp4Url: driveDownloadURL(DRIVE_ID_DEFAULT), driveId: DRIVE_ID_DEFAULT };
+
+// Cambiar video sin editar el archivo: acepta MP4 directo o link de Drive (view/preview)
+window.setTVVideo = function(url){
+  const id = extractDriveId(url);
+  if (id){ TV_SOURCE.mode='mp4'; TV_SOURCE.driveId=id; TV_SOURCE.mp4Url=driveDownloadURL(id); }
+  else { TV_SOURCE.mode='mp4'; TV_SOURCE.driveId=null; TV_SOURCE.mp4Url=url||''; }
+  if (tvState && tvState.on) powerOffTV(); setupTVScreen(true);
+};
+
 // Polyfill mínimo para CSS3DObject si el script de examples o el fallback no lo expone
 (function ensureCSS3DPolyfill(){
   if (!window.CSS3DObject && window.THREE && !THREE.CSS3DObject){
-    const C = function(element){
-      THREE.Object3D.call(this);
-      this.element = element; this.element.style.position = 'absolute';
-      this.element.style.transformStyle = 'preserve-3d';
-      this.isCSS3DObject = true;
-    };
-    C.prototype = Object.create(THREE.Object3D.prototype);
-    C.prototype.constructor = C;
-    window.CSS3DObject = C;
+    const C = function(element){ THREE.Object3D.call(this); this.element = element; this.element.style.position = 'absolute'; this.element.style.transformStyle = 'preserve-3d'; this.isCSS3DObject = true; };
+    C.prototype = Object.create(THREE.Object3D.prototype); C.prototype.constructor = C; window.CSS3DObject = C;
   }
 })();
+
 const BASE_HEIGHT = 1.6;      // altura ojos
 const WALK_SPEED = 3.2;       // m/s caminar
 const RUN_SPEED  = 6.0;       // m/s correr
@@ -73,53 +86,26 @@ const BASE_SENS_Y = 0.0018;   // pitch base
 let sensMul = 1.0;            // multiplicador (slider)
 
 // Habitaciones: tamaño y disposición
-const ROOM_SIZE = 16;               // 16m x 16m
-const ROOM_HALF = ROOM_SIZE/2;      // 8m
-const ROOMS = [
-  { name: 'C', x: -ROOM_SIZE },     // sala C (oeste)
-  { name: 'A', x: 0 },              // sala A (centro)
-  { name: 'B', x: ROOM_SIZE }       // sala B (este)
-];
-const WORLD_MIN_X = -ROOM_SIZE*1.5; // -24m
-const WORLD_MAX_X =  ROOM_SIZE*1.5; //  24m
-const WORLD_MIN_Z = -ROOM_HALF;     //  -8m
-const WORLD_MAX_Z =  ROOM_HALF;     //   8m
+const ROOM_SIZE = 16; const ROOM_HALF = ROOM_SIZE/2; const ROOMS = [{ name: 'C', x: -ROOM_SIZE }, { name: 'A', x: 0 }, { name: 'B', x: ROOM_SIZE }];
+const WORLD_MIN_X = -ROOM_SIZE*1.5, WORLD_MAX_X =  ROOM_SIZE*1.5, WORLD_MIN_Z = -ROOM_HALF, WORLD_MAX_Z = ROOM_HALF;
 
 // ========= ESCENA =========
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x111214);
-
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x111214);
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1500);
+const renderer = new THREE.WebGLRenderer({ antialias: true }); renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); renderer.setSize(window.innerWidth, window.innerHeight); renderer.shadowMap.enabled = true; document.body.appendChild(renderer.domElement); renderer.domElement.setAttribute('tabindex', '0'); renderer.domElement.focus();
 
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.shadowMap.enabled = true;
-document.body.appendChild(renderer.domElement);
-renderer.domElement.setAttribute('tabindex', '0');
-renderer.domElement.focus();
-
-// ========= CSS3D (YouTube en la TV) =========
+// ========= CSS3D (para TV) =========
 let cssRenderer = null;
 function initCSS3D(){
   try{
-    const CSS3DRendCtor = (window.CSS3DRenderer) || (window.THREE && THREE.CSS3DRenderer);
-    if (!CSS3DRendCtor) return false;
-    cssRenderer = new CSS3DRendCtor();
-    cssRenderer.setSize(window.innerWidth, window.innerHeight);
-    cssRenderer.domElement.style.position = 'absolute';
-    cssRenderer.domElement.style.top = '0';
-    cssRenderer.domElement.style.left = '0';
-    cssRenderer.domElement.style.pointerEvents = 'none';
+    const CSS3DRendCtor = (window.CSS3DRenderer) || (window.THREE && THREE.CSS3DRenderer); if (!CSS3DRendCtor) return false;
+    cssRenderer = new CSS3DRendCtor(); cssRenderer.setSize(window.innerWidth, window.innerHeight);
+    cssRenderer.domElement.style.position = 'absolute'; cssRenderer.domElement.style.top = '0'; cssRenderer.domElement.style.left = '0'; cssRenderer.domElement.style.pointerEvents = 'none';
     document.body.appendChild(cssRenderer.domElement);
     return true;
   }catch(e){ console.warn('CSS3DRenderer no disponible:', e); return false; }
 }
-// Intento inmediato + reintentos por compatibilidad
-if (!initCSS3D()){
-  window.addEventListener('load', initCSS3D);
-  setTimeout(initCSS3D, 400);
-}
+if (!initCSS3D()){ window.addEventListener('load', initCSS3D); setTimeout(initCSS3D, 400); }
 
 // ========= ILUMINACIÓN =========
 const hemi = new THREE.HemisphereLight(0xffffff, 0x303040, 0.65); scene.add(hemi);
@@ -127,66 +113,84 @@ const keyLight = new THREE.DirectionalLight(0xffffff, 1.0); keyLight.position.se
 const fillLight = new THREE.SpotLight(0x8eb5ff, 0.45, 30, Math.PI/6, 0.3, 1.0); fillLight.position.set(-4, 6, -5); fillLight.castShadow = true; scene.add(fillLight);
 
 // ========= PLAYER =========
-const player = new THREE.Object3D();
-player.position.set(0, BASE_HEIGHT, 6.5);
-scene.add(player);
-
-const pitchObj = new THREE.Object3D();
-pitchObj.add(camera);
-const yawObj = player; yawObj.add(pitchObj);
-let yaw = 0, pitch = 0; function applyLook(){ yawObj.rotation.y = yaw; pitchObj.rotation.x = pitch; }
+const player = new THREE.Object3D(); player.position.set(0, BASE_HEIGHT, 6.5); scene.add(player);
+const player = new THREE.Object3D(); player.position.set(0, BASE_HEIGHT, 6.5); scene.add(player);
+const pitchObj = new THREE.Object3D(); pitchObj.add(camera); const yawObj = player; yawObj.add(pitchObj); let yaw = 0, pitch = 0; function applyLook(){ yawObj.rotation.y = yaw; pitchObj.rotation.x = pitch; }
 
 // ========= MATERIALES =========
-const WALL_COLOR = 0xEADFF9; // pastel
-const FLOOR_COLOR = 0xC8CCD4; // gris claro
+const WALL_COLOR = 0xEADFF9; const FLOOR_COLOR = 0xC8CCD4;
 
 // ========= UTILIDADES =========
-const obstacles = []; // colisiones estáticas (paredes, muebles)
-function addObstacleFromObject(obj){ obj.updateMatrixWorld(true); obstacles.push({obj, box:new THREE.Box3().setFromObject(obj)}); }
-function refreshObstacleBoxes(){ for(const o of obstacles){ o.obj.updateMatrixWorld(true); o.box.setFromObject(o.obj); } }
-function intersectsAny(box){ for(const o of obstacles){ if(box.intersectsBox(o.box)) return true; } return false; }
+const obstacles = []; function addObstacleFromObject(obj){ obj.updateMatrixWorld(true); obstacles.push({obj, box:new THREE.Box3().setFromObject(obj)}); } function refreshObstacleBoxes(){ for(const o of obstacles){ o.obj.updateMatrixWorld(true); o.box.setFromObject(o.obj); } } function intersectsAny(box){ for(const o of obstacles){ if(box.intersectsBox(o.box)) return true; } return false; }
+function wallSegment(x,y,z,sx,sy,sz,visible=false){ const mat = new THREE.MeshStandardMaterial({ color: WALL_COLOR, roughness: 0.95, metalness: 0.0 }); const m = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), mat); m.position.set(x, y, z); if (!visible) m.material.visible = false; scene.add(m); addObstacleFromObject(m); return m; }
+function createRoom(xOffset){ const shell = new THREE.Mesh(new THREE.BoxGeometry(ROOM_SIZE, 6, ROOM_SIZE), new THREE.MeshStandardMaterial({ color: WALL_COLOR, side: THREE.BackSide, roughness: 0.95, metalness: 0.0 })); shell.position.set(xOffset, 3, 0); shell.receiveShadow = true; scene.add(shell); const floor = new THREE.Mesh(new THREE.PlaneGeometry(ROOM_SIZE, ROOM_SIZE), new THREE.MeshStandardMaterial({ color: FLOOR_COLOR, roughness: 0.9, metalness: 0.05 })); floor.rotation.x=-Math.PI/2; floor.position.set(xOffset, 0, 0); floor.receiveShadow = true; scene.add(floor); const t=0.12,h=2.5,gapW=1.2,gapZ=-2.0; wallSegment(xOffset,h/2,-ROOM_HALF + t/2, ROOM_SIZE,h,t); if (xOffset===0){ const leftW=(ROOM_SIZE-2.0)/2; wallSegment(xOffset-(2.0/2+leftW/2),h/2,ROOM_HALF - t/2,leftW,h,t); wallSegment(xOffset+(2.0/2+leftW/2),h/2,ROOM_HALF - t/2,leftW,h,t);} else { wallSegment(xOffset,h/2,ROOM_HALF - t/2,ROOM_SIZE,h,t);} const segTop=(ROOM_SIZE-gapW)/2; wallSegment(xOffset-ROOM_HALF + t/2,h/2,(gapZ + ROOM_HALF + segTop/2),t,h,segTop); wallSegment(xOffset-ROOM_HALF + t/2,h/2,(-ROOM_HALF + segTop/2 + (gapZ - segTop/2)),t,h,segTop); wallSegment(xOffset+ROOM_HALF - t/2,h/2,(gapZ + ROOM_HALF + segTop/2),t,h,segTop); wallSegment(xOffset+ROOM_HALF - t/2,h/2,(-ROOM_HALF + segTop/2 + (gapZ - segTop/2)),t,h,segTop); return { shell, floor }; }
+for (const r of ROOMS){ createRoom(r.x); }
 
-// Crea un segmento de pared como colisionador visible/invisible
-function wallSegment(x, y, z, sx, sy, sz, visible=false){
-  const mat = new THREE.MeshStandardMaterial({ color: WALL_COLOR, roughness: 0.95, metalness: 0.0 });
-  const m = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), mat);
-  m.position.set(x, y, z);
-  if (!visible) { m.material.visible = false; }
-  scene.add(m); addObstacleFromObject(m); return m;
-}
+// ========= MUEBLES =========
+function createSofa(){ const g=new THREE.Group(); const fabric=new THREE.MeshStandardMaterial({ color:0xBFD0FF, roughness:0.9, metalness:0.05 }); const wood=new THREE.MeshStandardMaterial({ color:0x4a3c2f, roughness:0.8, metalness:0.1 }); const legH=0.2, seatH=0.45; const seat=new THREE.Mesh(new THREE.BoxGeometry(1.6,seatH,0.8),fabric); seat.position.y=legH+seatH/2; seat.castShadow=seat.receiveShadow=true; g.add(seat); const back=new THREE.Mesh(new THREE.BoxGeometry(1.6,0.6,0.18),fabric); back.position.set(0,legH+seatH+0.3,-0.31); back.castShadow=back.receiveShadow=true; g.add(back); const armL=new THREE.Mesh(new THREE.BoxGeometry(0.18,seatH,0.8),fabric); armL.position.set(-0.89,legH+seatH/2,0); armL.castShadow=armL.receiveShadow=true; g.add(armL); const armR=armL.clone(); armR.position.x=0.89; g.add(armR); function leg(x,z){ const m=new THREE.Mesh(new THREE.CylinderGeometry(0.05,0.05,legH,16),wood); m.position.set(x,legH/2,z); m.castShadow=m.receiveShadow=true; g.add(m);} leg(0.68,0.3); leg(-0.68,0.3); leg(0.68,-0.3); leg(-0.68,-0.3); return g; }
+const sofa = createSofa(); sofa.position.set(0,0,-0.5); sofa.rotation.y=Math.PI; sofa.scale.set(2.0,1.0,1.2); scene.add(sofa); addObstacleFromObject(sofa);
 
-// Genera una habitación completa en xOffset (caja invertida + piso) y colisiones de paredes con huecos para puertas
-function createRoom(xOffset){
-  const shell = new THREE.Mesh(new THREE.BoxGeometry(ROOM_SIZE, 6, ROOM_SIZE), new THREE.MeshStandardMaterial({ color: WALL_COLOR, side: THREE.BackSide, roughness: 0.95, metalness: 0.0 }));
-  shell.position.set(xOffset, 3, 0); shell.receiveShadow = true; scene.add(shell);
+function createTVCabinet(){ const g=new THREE.Group(); const matBench=new THREE.MeshStandardMaterial({ color:0x44484f, roughness:0.85, metalness:0.2 }); const matMetal=new THREE.MeshStandardMaterial({ color:0x777a80, roughness:0.5, metalness:0.8 }); const matScreen=new THREE.MeshStandardMaterial({ color:0x111111, roughness:0.6, metalness:0.3 }); const bench=new THREE.Mesh(new THREE.BoxGeometry(2.6,0.6,0.5),matBench); bench.position.y=0.3; bench.castShadow=bench.receiveShadow=true; g.add(bench); const post=new THREE.Mesh(new THREE.BoxGeometry(0.12,1.1,0.12),matMetal); post.position.set(0,0.3+1.1/2,-0.20); post.castShadow=post.receiveShadow=true; g.add(post); const bracket=new THREE.Mesh(new THREE.BoxGeometry(0.8,0.08,0.08),matMetal); bracket.position.set(0,0.3+1.1,-0.24); bracket.castShadow=bracket.receiveShadow=true; g.add(bracket); const screenBody=new THREE.Mesh(new THREE.BoxGeometry(2.4,1.35,0.08),matScreen); screenBody.name='tvScreen'; screenBody.position.set(0,0.3+1.1+0.3,-0.28); screenBody.castShadow=true; screenBody.receiveShadow=true; g.add(screenBody); const bezel=new THREE.Mesh(new THREE.BoxGeometry(2.42,1.37,0.02),new THREE.MeshStandardMaterial({ color:0x0a0a0a, roughness:0.4, metalness:0.6 })); bezel.position.set(0,0.3+1.1+0.3,-0.23); g.add(bezel); return g; }
+const tv = createTVCabinet(); tv.position.set(0,0,-4.7); tv.rotation.y=Math.PI; scene.add(tv); addObstacleFromObject(tv);
 
-  const floor = new THREE.Mesh(new THREE.PlaneGeometry(ROOM_SIZE, ROOM_SIZE), new THREE.MeshStandardMaterial({ color: FLOOR_COLOR, roughness: 0.9, metalness: 0.05 }));
-  floor.rotation.x = -Math.PI/2; floor.position.set(xOffset, 0, 0); floor.receiveShadow = true; scene.add(floor);
+// ====== TV: estado y helpers ======
+const tvState = { on:false, playing:false, apiReady:false, player:null, playerReady:false, wantPlay:false, cssObj:null, iframe:null, videoEl:null, div:null };
+function makeTVContainer(){ const div=document.createElement('div'); div.style.width='960px'; div.style.height='540px'; div.style.background='#000'; div.style.pointerEvents='none'; return div; }
 
-  // Colisiones de paredes (dejando aberturas de puerta en ESTE/OESTE para A-B y A-C)
-  const t = 0.12, h=2.5, gapW=1.2, gapZ=-2.0; // posición de hueco de puerta lateral
+function setupTVScreen(force=false){
+  if (!force && tvState.div) return;
+  const screen = tv.getObjectByName('tvScreen'); if (!screen) return; screen.updateMatrixWorld(true);
+  const pos = new THREE.Vector3(); const quat = new THREE.Quaternion(); screen.getWorldPosition(pos); screen.getWorldQuaternion(quat);
+  if (tvState.cssObj && tvState.cssObj.parent) tvState.cssObj.parent.remove(tvState.cssObj);
+  tvState.cssObj = null; tvState.iframe = null; tvState.videoEl = null; tvState.div = null;
+  const div = makeTVContainer();
 
-  // Norte (sin hueco)
-  wallSegment(xOffset, h/2, -ROOM_HALF + t/2, ROOM_SIZE, h, t);
-  // Sur (deja hueco de 2m solo en sala A, centro)
-  if (xOffset===0){
-    const leftW = (ROOM_SIZE - 2.0)/2; wallSegment(xOffset - (2.0/2 + leftW/2), h/2, ROOM_HALF - t/2, leftW, h, t);
-    wallSegment(xOffset + (2.0/2 + leftW/2), h/2, ROOM_HALF - t/2, leftW, h, t);
-  } else {
-    wallSegment(xOffset, h/2, ROOM_HALF - t/2, ROOM_SIZE, h, t);
+  // si vamos por MP4 directo
+  if (TV_SOURCE.mode === 'mp4' && TV_SOURCE.mp4Url){
+    const video = document.createElement('video');
+    video.setAttribute('playsinline',''); video.setAttribute('webkit-playsinline',''); video.preload='metadata'; video.loop=true; video.controls=false; video.muted=true; // desmuteo dinámico por distancia
+    video.crossOrigin='anonymous';
+    let fallbackTimer = null; const fallbackToGDrive = ()=>{ if (TV_SOURCE.driveId){ console.warn('Fallo MP4 directo; usando preview de Drive'); TV_SOURCE.mode='gdrive'; setupTVScreen(true); } };
+    video.addEventListener('loadeddata', ()=>{ if (fallbackTimer){ clearTimeout(fallbackTimer); fallbackTimer=null; } });
+    video.addEventListener('error', ()=>fallbackToGDrive());
+    // Si en 2.5s no carga nada, caer a preview
+    fallbackTimer = setTimeout(fallbackToGDrive, 2500);
+    video.src = TV_SOURCE.mp4Url;
+    div.appendChild(video); tvState.videoEl = video;
   }
-  // Oeste: segmentos arriba/abajo del hueco
-  const segTop = (ROOM_SIZE - gapW)/2; // tramo por arriba del hueco
-  wallSegment(xOffset - ROOM_HALF + t/2, h/2, (gapZ + ROOM_HALF + segTop/2), t, h, segTop);
-  wallSegment(xOffset - ROOM_HALF + t/2, h/2, (-ROOM_HALF + segTop/2 + (gapZ - segTop/2)), t, h, segTop);
-  // Este (mismo criterio)
-  wallSegment(xOffset + ROOM_HALF - t/2, h/2, (gapZ + ROOM_HALF + segTop/2), t, h, segTop);
-  wallSegment(xOffset + ROOM_HALF - t/2, h/2, (-ROOM_HALF + segTop/2 + (gapZ - segTop/2)), t, h, segTop);
+  // si usamos preview de Drive
+  if (TV_SOURCE.mode === 'gdrive' && TV_SOURCE.driveId){
+    const iframe = document.createElement('iframe'); iframe.width='960'; iframe.height='540'; iframe.frameBorder='0'; iframe.allow='autoplay'; iframe.src = drivePreviewURL(TV_SOURCE.driveId);
+    div.appendChild(iframe); tvState.iframe = iframe;
+  }
+  // si es YouTube (sigue soportado)
+  if (TV_SOURCE.mode === 'youtube'){
+    const iframe = document.createElement('iframe'); iframe.id='yt_tv_'+Date.now(); iframe.width='960'; iframe.height='540'; iframe.frameBorder='0'; iframe.allow='autoplay; encrypted-media; picture-in-picture'; iframe.referrerPolicy='strict-origin-when-cross-origin'; iframe.allowFullscreen=true; iframe.setAttribute('allowfullscreen',''); iframe.src = 'https://www.youtube-nocookie.com/embed/'+TV_SOURCE.youtubeId+'?enablejsapi=1&rel=0&controls=0&modestbranding=1&playsinline=1&loop=1&playlist='+TV_SOURCE.youtubeId+'&origin='+encodeURIComponent(window.location.origin); div.appendChild(iframe); tvState.iframe=iframe;
+  }
 
+  const CSS3DObjCtor = (window.CSS3DObject) || (window.THREE && THREE.CSS3DObject);
+  if (cssRenderer && CSS3DObjCtor){
+    const obj = new CSS3DObjCtor(div); obj.position.copy(pos); obj.quaternion.copy(quat); const scale = 2.4/960; obj.scale.set(scale, scale, scale); scene.add(obj);
+    tvState.cssObj = obj; tvState.div = div; tvState.div.style.visibility='hidden'; try { cssRenderer.render(scene, camera); } catch(_){}
+  } else { tvState.div = div; tvState.div.style.visibility='hidden'; }
+}
+setupTVScreen();
+
+// YouTube API (si se usa YouTube)
+window.onYouTubeIframeAPIReady = function(){ tvState.apiReady = true; ensureYTPlayer(); if (tvState.wantPlay && tvState.playerReady && tvState.player) { try { tvState.player.playVideo(); tvState.playing = true; } catch(_){} } };
+function ensureYTPlayer(){ if (TV_SOURCE.mode !== 'youtube') return null; if (tvState.player) return tvState.player; if (!tvState.apiReady || !tvState.iframe) return null; tvState.player = new YT.Player(tvState.iframe, { host:'https://www.youtube-nocookie.com', events:{ onReady:(e)=>{ tvState.playerReady=true; try{e.target.mute();}catch(_){} if (tvState.wantPlay){ try{ e.target.playVideo(); tvState.playing=true; }catch(err){ console.warn('YT play error onReady:', err); } } }, onStateChange:(e)=>{ const S=YT.PlayerState; tvState.playing=(e.data===S.PLAYING); }, onError:(e)=>{ console.warn('YT Player error code:', e && e.data); } }, playerVars:{ autoplay:0, controls:0, rel:0, loop:1, playlist:TV_SOURCE.youtubeId, modestbranding:1, playsinline:1, fs:1, iv_load_policy:3, origin:window.location.origin } }); return tvState.player; }
+
+function powerOnTV(){ tvState.on=true; if (tvState.div) tvState.div.style.visibility='visible'; if (TV_SOURCE.mode==='youtube') ensureYTPlayer(); if (TV_SOURCE.mode==='mp4' && tvState.videoEl){ try{ tvState.videoEl.load(); }catch(_){} } }
+function powerOffTV(){ if (TV_SOURCE.mode==='youtube' && tvState.player){ tvState.player.stopVideo(); } if (TV_SOURCE.mode==='mp4' && tvState.videoEl){ try{ tvState.videoEl.pause(); }catch(_){} } tvState.playing=false; tvState.on=false; if (tvState.div) tvState.div.style.visibility='hidden'; }
+
+function playTV(){
+  tvState.wantPlay = true;
+  if (TV_SOURCE.mode === 'youtube'){ const p=ensureYTPlayer(); if (p && tvState.apiReady){ try{ p.playVideo(); tvState.playing=true; }catch(_){} } return; }
+  if (TV_SOURCE.mode === 'mp4' && tvState.videoEl){ const v=tvState.videoEl; const tryPlay = ()=>v.play().then(()=>{ tvState.playing=true; }).catch(err=>{ v.muted=true; v.play().then(()=>{ tvState.playing=true; }).catch(e=>console.warn('Video play error:', e)); }); tryPlay(); return; }
+  if (TV_SOURCE.mode === 'gdrive'){ // necesitamos clic directo del usuario en el iframe (no hay API)
   return { shell, floor };
 }
 
-// Crear las tres salas
 for (const r of ROOMS){ createRoom(r.x); }
 
 // ========= MUEBLES BASE EN A =========
@@ -221,89 +225,83 @@ function createTVCabinet(){
 }
 const tv = createTVCabinet();
  tv.position.set(0, 0, -4.7);
- // Giramos todo el conjunto (mueble + columna + pantalla) para que mire al sofá
- tv.rotation.y = Math.PI;
+ tv.rotation.y = Math.PI; // mirar al sofá
  scene.add(tv);
  addObstacleFromObject(tv);
 
-// ====== TV: YouTube + pantalla CSS3D ======
-const tvState = { on:false, playing:false, apiReady:false, player:null, playerReady:false, wantPlay:false, cssObj:null, iframe:null, videoId:'8s1sh-CRMXc' };
+// ====== TV: estado y helpers ======
+const tvState = { on:false, playing:false, apiReady:false, player:null, playerReady:false, wantPlay:false, cssObj:null, iframe:null, videoEl:null, div:null };
 
-function setupTVScreen(){
-  const screen = tv.getObjectByName('tvScreen');
-  if (!screen) return;
-  screen.updateMatrixWorld(true);
-  const pos = new THREE.Vector3(); const quat = new THREE.Quaternion();
-  screen.getWorldPosition(pos); screen.getWorldQuaternion(quat);
-
+function makeTVContainer(){
   const div = document.createElement('div');
   div.style.width = '960px';
   div.style.height = '540px';
   div.style.background = '#000';
   div.style.pointerEvents = 'none';
-
-  const iframe = document.createElement('iframe');
-  iframe.id = 'yt_tv_'+Date.now();
-  iframe.width = '960'; iframe.height = '540'; iframe.frameBorder = '0';
-  iframe.allow = 'autoplay; encrypted-media; picture-in-picture';
-  iframe.referrerPolicy = 'strict-origin-when-cross-origin';
-  iframe.src = 'https://www.youtube.com/embed/'+tvState.videoId+'?enablejsapi=1&rel=0&controls=0&modestbranding=1&playsinline=1&loop=1&playlist='+tvState.videoId+'&origin='+encodeURIComponent(window.location.origin);
-  div.appendChild(iframe);
-
-  // Detecta constructores CSS3D
-  const CSS3DObjCtor = (window.CSS3DObject) || (window.THREE && THREE.CSS3DObject);
-
-  if (cssRenderer && CSS3DObjCtor){
-    // Modo correcto: proyección 3D sobre la pantalla
-    const obj = new CSS3DObjCtor(div);
-    obj.position.copy(pos); obj.quaternion.copy(quat);
-    const scale = 2.4/960; // 2.4m de ancho -> 960 px
-    obj.scale.set(scale, scale, scale);
-    scene.add(obj);
-    tvState.cssObj = obj;
-  } else {
-    // Fallback: sin proyección 3D. No insertamos en DOM para evitar solapar la escena.
-    tvState.cssObj = null;
-  }
-  // En ambos casos guardamos referencias y ocultamos hasta Encender
-  tvState.iframe = iframe; tvState.div = div; tvState.div.style.visibility = 'hidden';
+  return div;
 }
-setupTVScreen();
-// Si el CSS3DRenderer se inicializó después de crear el div de la TV, lo pegamos ahora
-function attachTVDivToScreen(){
-  if (!cssRenderer) return false;
-  const CSS3DObjCtor = (window.CSS3DObject) || (window.THREE && THREE.CSS3DObject);
-  if (!CSS3DObjCtor || !tvState.div) return false;
-  const screen = tv.getObjectByName('tvScreen'); if (!screen) return false;
+
+function setupTVScreen(force=false){
+  if (!force && tvState.div) return;
+  const screen = tv.getObjectByName('tvScreen'); if (!screen) return;
   screen.updateMatrixWorld(true);
   const pos = new THREE.Vector3(); const quat = new THREE.Quaternion();
   screen.getWorldPosition(pos); screen.getWorldQuaternion(quat);
-  const obj = new CSS3DObjCtor(tvState.div);
-  obj.position.copy(pos); obj.quaternion.copy(quat);
-  const scale = 2.4/960; obj.scale.set(scale, scale, scale);
-  scene.add(obj);
-  tvState.cssObj = obj; return true;
+
+  if (tvState.cssObj && tvState.cssObj.parent) tvState.cssObj.parent.remove(tvState.cssObj);
+  tvState.cssObj = null; tvState.iframe = null; tvState.videoEl = null; tvState.div = null;
+
+  const div = makeTVContainer();
+  if (TV_SOURCE.mode === 'mp4' && TV_SOURCE.mp4Url){
+    const video = document.createElement('video');
+    video.setAttribute('playsinline','');
+    video.setAttribute('webkit-playsinline','');
+    video.preload = 'metadata';
+    video.loop = true; video.controls = false; video.muted = true; // desmuteo dinámico por distancia
+    video.src = TV_SOURCE.mp4Url;
+    div.appendChild(video);
+    tvState.videoEl = video;
+  } else {
+    const iframe = document.createElement('iframe');
+    iframe.id = 'yt_tv_'+Date.now();
+    iframe.width = '960'; iframe.height = '540'; iframe.frameBorder = '0';
+    iframe.allow = 'autoplay; encrypted-media; picture-in-picture';
+    iframe.referrerPolicy = 'strict-origin-when-cross-origin';
+    iframe.allowFullscreen = true; iframe.setAttribute('allowfullscreen','');
+    iframe.src = 'https://www.youtube-nocookie.com/embed/'+TV_SOURCE.youtubeId+'?enablejsapi=1&rel=0&controls=0&modestbranding=1&playsinline=1&loop=1&playlist='+TV_SOURCE.youtubeId+'&origin='+encodeURIComponent(window.location.origin);
+    div.appendChild(iframe);
+    tvState.iframe = iframe;
+  }
+
+  const CSS3DObjCtor = (window.CSS3DObject) || (window.THREE && THREE.CSS3DObject);
+  if (cssRenderer && CSS3DObjCtor){
+    const obj = new CSS3DObjCtor(div);
+    obj.position.copy(pos); obj.quaternion.copy(quat);
+    const scale = 2.4/960; obj.scale.set(scale, scale, scale);
+    scene.add(obj);
+    tvState.cssObj = obj; tvState.div = div; tvState.div.style.visibility = 'hidden';
+    try { cssRenderer.render(scene, camera); } catch(_){}
+  } else { tvState.div = div; tvState.div.style.visibility = 'hidden'; }
 }
-if (cssRenderer && !tvState.cssObj) attachTVDivToScreen();
+setupTVScreen();
 
+// YouTube API (si se usa YouTube)
 window.onYouTubeIframeAPIReady = function(){ tvState.apiReady = true; ensureYTPlayer(); if (tvState.wantPlay && tvState.playerReady && tvState.player) { try { tvState.player.playVideo(); tvState.playing = true; } catch(_){} } };
-
 function ensureYTPlayer(){
+  if (TV_SOURCE.mode !== 'youtube') return null;
   if (tvState.player) return tvState.player;
   if (!tvState.apiReady || !tvState.iframe) return null;
   tvState.player = new YT.Player(tvState.iframe, {
-    host: 'https://www.youtube.com',
+    host: 'https://www.youtube-nocookie.com',
     events: {
       onReady: (e) => {
-        tvState.playerReady = true;
-        try { e.target.mute(); } catch(_){}
-        if (tvState.wantPlay) {
-          try { e.target.playVideo(); tvState.playing = true; } catch(_){}
-        }
+        tvState.playerReady = true; try { e.target.mute(); } catch(_){ }
+        if (tvState.wantPlay) { try { e.target.playVideo(); tvState.playing = true; } catch(err){ console.warn('YT play error onReady:', err); } }
       },
-      onStateChange: (e) => { const S = YT.PlayerState; tvState.playing = (e.data === S.PLAYING); }
+      onStateChange: (e) => { const S = YT.PlayerState; tvState.playing = (e.data === S.PLAYING); },
+      onError: (e) => { console.warn('YT Player error code:', e && e.data); }
     },
-    playerVars: { autoplay: 0, controls: 0, rel: 0, loop: 1, playlist: tvState.videoId, modestbranding: 1, playsinline: 1, origin: window.location.origin }
+    playerVars: { autoplay: 0, controls: 0, rel: 0, loop: 1, playlist: TV_SOURCE.youtubeId, modestbranding: 1, playsinline: 1, fs: 1, iv_load_policy: 3, origin: window.location.origin }
   });
   return tvState.player;
 }
@@ -311,17 +309,24 @@ function ensureYTPlayer(){
 function powerOnTV(){
   tvState.on = true;
   if (tvState.div) tvState.div.style.visibility = 'visible';
-  ensureYTPlayer();
+  if (TV_SOURCE.mode === 'youtube') ensureYTPlayer();
+  if (TV_SOURCE.mode === 'mp4' && tvState.videoEl){ try { tvState.videoEl.load(); } catch(_){} }
 }
-function powerOffTV(){ if (tvState.player){ tvState.player.stopVideo(); } tvState.playing=false; tvState.on=false; if (tvState.div) tvState.div.style.visibility='hidden'; }
+function powerOffTV(){
+  if (TV_SOURCE.mode === 'youtube' && tvState.player){ tvState.player.stopVideo(); }
+  if (TV_SOURCE.mode === 'mp4' && tvState.videoEl){ try { tvState.videoEl.pause(); } catch(_){} }
+  tvState.playing=false; tvState.on=false; if (tvState.div) tvState.div.style.visibility='hidden';
+}
 function playTV(){
   tvState.wantPlay = true;
-  const p = ensureYTPlayer();
-  if (p && tvState.apiReady) {
-    try { p.playVideo(); tvState.playing = true; } catch(_){}
+  if (TV_SOURCE.mode === 'youtube'){
+    const p = ensureYTPlayer(); if (p && tvState.apiReady) { try { p.playVideo(); tvState.playing = true; } catch(_){} }
+  } else if (TV_SOURCE.mode === 'mp4' && tvState.videoEl){
+    const v = tvState.videoEl; const tryPlay = ()=>v.play().then(()=>{ tvState.playing=true; }).catch(err=>{ v.muted = true; v.play().then(()=>{ tvState.playing=true; }).catch(e=>console.warn('Video play error:', e)); });
+    tryPlay();
   }
 }
-function pauseTV(){ if (tvState.player){ tvState.player.pauseVideo(); tvState.playing=false; } }
+function pauseTV(){ if (TV_SOURCE.mode === 'youtube' && tvState.player){ tvState.player.pauseVideo(); tvState.playing=false; } if (TV_SOURCE.mode === 'mp4' && tvState.videoEl){ try { tvState.videoEl.pause(); tvState.playing=false; } catch(_){} } }
 
 // ========= EXTRAS EN SALAS B y C =========
 function createBed(){
@@ -337,9 +342,7 @@ function createFridge(){
   const handle = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.5, 0.04), new THREE.MeshStandardMaterial({ color: 0x888888 })); handle.position.set(0.38, 1.0, 0.35); g.add(handle);
   return g;
 }
-// En sala B (este): cama al costado
 const bedB = createBed(); bedB.position.set(ROOM_SIZE, 0, 6.0); bedB.rotation.y = Math.PI/2; scene.add(bedB); addObstacleFromObject(bedB);
-// En sala C (oeste): refrigerador al costado
 const fridgeC = createFridge(); fridgeC.position.set(-ROOM_SIZE, 0, 6.0); fridgeC.rotation.y = -Math.PI/2; scene.add(fridgeC); addObstacleFromObject(fridgeC);
 
 // ========= PUERTAS INTERACTIVAS =========
@@ -380,34 +383,29 @@ window.addEventListener('keyup',   e => onKey(e, false));
 
 let usingPointerLock = false; let dragging = false; let entered = false; let pointerLockDenied = false;
 function lockPointer(){
-  if (pointerLockDenied) return; // si el sandbox lo bloqueó, no insistimos
-  try {
-    if (renderer.domElement.requestPointerLock) renderer.domElement.requestPointerLock();
-  } catch (err) {
-    pointerLockDenied = true;
-    usingPointerLock = false;
-    hideOverlay();
-    notice.hidden = false;
+  if (pointerLockDenied) return; // el sandbox lo bloqueó previamente
+  try { if (renderer.domElement.requestPointerLock) renderer.domElement.requestPointerLock(); }
+  catch (err) {
+    pointerLockDenied = true; usingPointerLock = false; hideOverlay(); notice.hidden = false;
     notice.textContent = 'Modo arrastre: tu navegador bloqueó el pointer lock';
   }
 }
 function unlockPointer(){ if (document.pointerLockElement) document.exitPointerLock?.(); }
 
+// Cambios clave: SÓLO intentamos pointer lock si el usuario activó el toggle
+const lockToggle = document.getElementById('lockToggle');
+
 document.addEventListener('pointerlockchange', () => {
   usingPointerLock = (document.pointerLockElement === renderer.domElement);
-  if (usingPointerLock) {
-    hideOverlay();
-    notice.hidden = true;
-  } else {
-    // Si ya "entramos" pero no hay pointer lock (sandbox), mantenemos overlay oculto y mostramos aviso
+  if (usingPointerLock) { hideOverlay(); notice.hidden = true; }
+  else {
     if (entered) { hideOverlay(); notice.hidden = false; notice.textContent = 'Modo arrastre activo (mantén clic y arrastra para mirar)'; }
     else { showOverlay(true); }
   }
 });
 
 document.addEventListener('pointerlockerror', () => {
-  usingPointerLock = false;
-  pointerLockDenied = true;
+  usingPointerLock = false; pointerLockDenied = true;
   if (entered) { hideOverlay(); notice.hidden = false; notice.textContent = 'Modo arrastre: pointer lock bloqueado por sandbox'; }
 });
 
@@ -446,7 +444,6 @@ interactUI.addEventListener('click', () => { performAction(); });
 
 function updateInteraction(){
   interactCurrent = null;
-  // 1) Raycast para puertas en el centro de la mira
   raycaster.setFromCamera(ndc, camera);
   const meshes = interactables.map(i => i.mesh);
   const hits = raycaster.intersectObjects(meshes, false);
@@ -460,7 +457,6 @@ function updateInteraction(){
       return;
     }
   }
-  // 2) TV por proximidad y orientación
   const tvPos = new THREE.Vector3(); tv.getWorldPosition(tvPos);
   const forward = new THREE.Vector3(0,0,-1).applyQuaternion(tv.quaternion).normalize();
   const toPlayer = new THREE.Vector3().subVectors(player.position, tvPos); const dist = toPlayer.length(); toPlayer.y = 0; toPlayer.normalize();
@@ -483,34 +479,41 @@ function updateInteraction(){
   }
   interactUI.hidden = true;
 }
+
 // ========= AUDIO TV (atenuación por distancia) =========
 function updateTVAudio(){
-  if (!tvState.player || !tvState.on) return;
+  if (!tvState.on) return;
   const tvPos = new THREE.Vector3(); tv.getWorldPosition(tvPos);
   const dist = tvPos.distanceTo(player.position);
   const near = 1.0, far = 12.0;
-  let vol = 0;
-  if (dist <= near) vol = 100;
-  else if (dist >= far) vol = 0;
-  else vol = Math.round(100 * (1 - (dist - near) / (far - near)));
-  try { tvState.player.setVolume(vol); if (vol > 0) { tvState.player.unMute(); } else { tvState.player.mute(); } } catch(_){ }
+  let vol01 = 0;
+  if (dist <= near) vol01 = 1.0; else if (dist >= far) vol01 = 0.0; else vol01 = (1 - (dist - near) / (far - near));
+
+  if (TV_SOURCE.mode === 'youtube' && tvState.player){
+    const vol = Math.round(vol01 * 100);
+    try { tvState.player.setVolume(vol); if (vol > 0) tvState.player.unMute(); else tvState.player.mute(); } catch(_){ }
+  }
+  if (TV_SOURCE.mode === 'mp4' && tvState.videoEl){
+    try { tvState.videoEl.volume = vol01; tvState.videoEl.muted = (vol01 === 0); } catch(_){ }
+  }
 }
 
-// ========= OVERLAY & UI =========
+// ========= OVERLAY & ENTRADA =========
 const overlay = document.getElementById('overlay');
 const startBtn = document.getElementById('start');
 const notice = document.getElementById('notice');
 function hideOverlay(){ overlay.style.display = 'none'; notice.hidden = true; }
 function showOverlay(showNotice=true){ overlay.style.display = 'grid'; notice.hidden = !showNotice; }
-startBtn.addEventListener('click', () => { 
-  entered = true; 
-  hideOverlay(); 
-  lockPointer(); // intento sólo tras interacción del usuario
+startBtn.addEventListener('click', () => {
+  entered = true; hideOverlay();
+  // Intentar pointer lock SOLO si el usuario lo activó
+  if (lockToggle.checked) { lockPointer(); }
+  else { usingPointerLock = false; notice.hidden = false; notice.textContent = 'Modo arrastre activo (mantén clic y arrastra para mirar)'; }
 });
 const sensSlider = document.getElementById('sens'); const sensVal = document.getElementById('sensVal');
 sensSlider.addEventListener('input', () => { sensMul = parseFloat(sensSlider.value); sensVal.textContent = sensMul.toFixed(1) + '×'; });
-// Permitir reintentar pointer lock con click explícito del usuario
-renderer.domElement.addEventListener('click', () => { if (!usingPointerLock) lockPointer(); });
+// Reintentar bloqueo solo si el usuario lo permite explícitamente
+renderer.domElement.addEventListener('click', () => { if (!usingPointerLock && lockToggle.checked) lockPointer(); });
 
 // ========= MOVIMIENTO =========
 const clock = new THREE.Clock(); let bobPhase = 0; const tmpForward = new THREE.Vector3(); const tmpRight = new THREE.Vector3(); const up = new THREE.Vector3(0,1,0);
@@ -520,24 +523,22 @@ function canMoveTo(nx, nz){
   const PLAYER_RADIUS = 0.35, PLAYER_HEIGHT = 1.8; const pb = new THREE.Box3(new THREE.Vector3(nx - PLAYER_RADIUS, 0, nz - PLAYER_RADIUS), new THREE.Vector3(nx + PLAYER_RADIUS, PLAYER_HEIGHT, nz + PLAYER_RADIUS));
   return !intersectsAny(pb);
 }
-function updateDoors(dt){
-  for(const d of doors){
-    const diff = d.target - d.angle; if (Math.abs(diff) < 0.001) continue;
-    const step = Math.sign(diff) * Math.min(Math.abs(diff), dt * 2.5);
-    d.angle += step; d.hinge.rotation.y = d.angle;
-  }
-}
+function updateDoors(dt){ for(const d of doors){ const diff = d.target - d.angle; if (Math.abs(diff) < 0.001) continue; const step = Math.sign(diff) * Math.min(Math.abs(diff), dt * 2.5); d.angle += step; d.hinge.rotation.y = d.angle; } }
 function toggleDoor(door){ door.target = door.isOpen ? 0 : door.dir * Math.PI/2; door.isOpen = !door.isOpen; }
 
 function animate(){
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.033);
   refreshObstacleBoxes(); updateDoors(dt); updateInteraction(); updateTVAudio();
-  tmpForward.set(0,0,-1).applyAxisAngle(up, yaw).normalize(); tmpRight.crossVectors(tmpForward, up).normalize();
+  const up = new THREE.Vector3(0,1,0);
+  const fwd = new THREE.Vector3(0,0,-1).applyAxisAngle(up, yaw).normalize();
+  const right = new THREE.Vector3().crossVectors(fwd, up).normalize();
   const hasInput = keys.forward || keys.back || keys.left || keys.right; const moveVec = new THREE.Vector3();
-  if (keys.forward) moveVec.add(tmpForward); if (keys.back) moveVec.addScaledVector(tmpForward, -1); if (keys.right) moveVec.add(tmpRight); if (keys.left) moveVec.addScaledVector(tmpRight, -1);
+  if (keys.forward) moveVec.add(fwd); if (keys.back) moveVec.addScaledVector(fwd, -1); if (keys.right) moveVec.add(right); if (keys.left) moveVec.addScaledVector(right, -1);
   const curSpeed = (keys.shift ? RUN_SPEED : WALK_SPEED); if (hasInput) moveVec.normalize().multiplyScalar(curSpeed * dt);
-  const curX = player.position.x, curZ = player.position.z; let nx = curX, nz = curZ; if (moveVec.x !== 0){ const tryX = curX + moveVec.x; if (canMoveTo(tryX, curZ)) nx = tryX; } if (moveVec.z !== 0){ const tryZ = curZ + moveVec.z; if (canMoveTo(nx, tryZ)) nz = tryZ; }
+  const curX = player.position.x, curZ = player.position.z; let nx = curX, nz = curZ;
+  if (moveVec.x !== 0){ const tryX = curX + moveVec.x; if (canMoveTo(tryX, curZ)) nx = tryX; }
+  if (moveVec.z !== 0){ const tryZ = curZ + moveVec.z; if (canMoveTo(nx, tryZ)) nz = tryZ; }
   player.position.x = nx; player.position.z = nz;
   if (hasInput){ bobPhase += dt * 7.0; const bob = Math.sin(bobPhase) * 0.035; player.position.y = BASE_HEIGHT + bob; } else { bobPhase = 0; player.position.y += (BASE_HEIGHT - player.position.y) * Math.min(1, dt * 6); }
   renderer.render(scene, camera);
@@ -560,17 +561,4 @@ addFrame( 4.0, 2.0,  ROOM_HALF - 0.05, 1.4, 0.9);
   const tests = [];
   tests.push(['THREE cargado', !!window.THREE]);
   tests.push(['Escena creada', scene && scene.type === 'Scene']);
-  tests.push(['TV presente', !!tv && !!tv.getObjectByName('tvScreen')]);
-  tests.push(['Puertas creadas', doors.length === 2]);
-  tests.push(['updateInteraction existe', typeof updateInteraction === 'function']);
-  tests.push(['CSS3D disponible (opcional)', !!(window.CSS3DObject || (window.THREE && THREE.CSS3DObject)) || !!(window.CSS3DRenderer || (window.THREE && THREE.CSS3DRenderer))]);
-  tests.push(['Pointer lock: función preparada', typeof lockPointer === 'function']);
-  tests.push(['Overlay oculto tras entrar (sin lock)', (function(){ return true; })()]);
-  const ok = tests.every(t=>t[1]);
-  console.log('%cSelf-tests', 'color:#9cf');
-  for (const [name, pass] of tests){ console.log((pass?'✅':'❌')+' '+name); }
-  if (!ok) console.warn('Alguna prueba falló; revisa arriba.');
-})();
-</script>
-</body>
-</html>
+  tests.push(['TV presente', !!tv && !!tv.getObjectByName('t
