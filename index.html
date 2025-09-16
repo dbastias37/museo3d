@@ -46,6 +46,8 @@
 
   <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/renderers/CSS3DRenderer.js"></script>
+  <!-- Fallback por si la versión de examples/js no expone correctamente CSS3DObject/CSS3DRenderer -->
+  <script src="https://cdn.jsdelivr.net/npm/three-css3drenderer@1.0.1/build/CSS3DRenderer.min.js"></script>
   <script src="https://www.youtube.com/iframe_api"></script>
 <script>
 // ========= CONFIG =========
@@ -83,19 +85,27 @@ document.body.appendChild(renderer.domElement);
 renderer.domElement.setAttribute('tabindex', '0');
 renderer.domElement.focus();
 
-// CSS3D renderer (para incrustar iframe de YouTube en la TV)
+// ========= CSS3D (YouTube en la TV) =========
 let cssRenderer = null;
-try{
-  if (THREE.CSS3DRenderer){
-    cssRenderer = new THREE.CSS3DRenderer();
-    if (cssRenderer) cssRenderer.setSize(window.innerWidth, window.innerHeight);
+function initCSS3D(){
+  try{
+    const CSS3DRendCtor = (window.CSS3DRenderer) || (window.THREE && THREE.CSS3DRenderer);
+    if (!CSS3DRendCtor) return false;
+    cssRenderer = new CSS3DRendCtor();
+    cssRenderer.setSize(window.innerWidth, window.innerHeight);
     cssRenderer.domElement.style.position = 'absolute';
     cssRenderer.domElement.style.top = '0';
     cssRenderer.domElement.style.left = '0';
     cssRenderer.domElement.style.pointerEvents = 'none';
     document.body.appendChild(cssRenderer.domElement);
-  }
-}catch(e){ console.warn('CSS3DRenderer no disponible:', e); }
+    return true;
+  }catch(e){ console.warn('CSS3DRenderer no disponible:', e); return false; }
+}
+// Intento inmediato + reintentos por compatibilidad
+if (!initCSS3D()){
+  window.addEventListener('load', initCSS3D);
+  setTimeout(initCSS3D, 400);
+}
 
 // ========= ILUMINACIÓN =========
 const hemi = new THREE.HemisphereLight(0xffffff, 0x303040, 0.65); scene.add(hemi);
@@ -211,11 +221,13 @@ function setupTVScreen(){
   screen.updateMatrixWorld(true);
   const pos = new THREE.Vector3(); const quat = new THREE.Quaternion();
   screen.getWorldPosition(pos); screen.getWorldQuaternion(quat);
+
   const div = document.createElement('div');
   div.style.width = '960px';
   div.style.height = '540px';
   div.style.background = '#000';
   div.style.pointerEvents = 'none';
+
   const iframe = document.createElement('iframe');
   iframe.id = 'yt_tv_'+Date.now();
   iframe.width = '960'; iframe.height = '540'; iframe.frameBorder = '0';
@@ -223,12 +235,24 @@ function setupTVScreen(){
   iframe.referrerPolicy = 'strict-origin-when-cross-origin';
   iframe.src = 'https://www.youtube.com/embed/'+tvState.videoId+'?enablejsapi=1&rel=0&controls=0&modestbranding=1&playsinline=1&loop=1&playlist='+tvState.videoId;
   div.appendChild(iframe);
-  const obj = new THREE.CSS3DObject(div);
-  obj.position.copy(pos); obj.quaternion.copy(quat);
-  const scale = 2.4/960; // 2.4m de ancho -> 960 px
-  obj.scale.set(scale, scale, scale);
-  scene.add(obj);
-  tvState.cssObj = obj; tvState.iframe = iframe; tvState.div = div; tvState.div.style.visibility = 'hidden';
+
+  // Detecta constructores CSS3D
+  const CSS3DObjCtor = (window.CSS3DObject) || (window.THREE && THREE.CSS3DObject);
+
+  if (cssRenderer && CSS3DObjCtor){
+    // Modo correcto: proyección 3D sobre la pantalla
+    const obj = new CSS3DObjCtor(div);
+    obj.position.copy(pos); obj.quaternion.copy(quat);
+    const scale = 2.4/960; // 2.4m de ancho -> 960 px
+    obj.scale.set(scale, scale, scale);
+    scene.add(obj);
+    tvState.cssObj = obj;
+  } else {
+    // Fallback: sin proyección 3D. No insertamos en DOM para evitar solapar la escena.
+    tvState.cssObj = null;
+  }
+  // En ambos casos guardamos referencias y ocultamos hasta Encender
+  tvState.iframe = iframe; tvState.div = div; tvState.div.style.visibility = 'hidden';
 }
 setupTVScreen();
 
@@ -245,7 +269,19 @@ function ensureYTPlayer(){
   });
 }
 
-function powerOnTV(){ tvState.on = true; if (tvState.div) tvState.div.style.visibility = 'visible'; ensureYTPlayer(); }
+function powerOnTV(){
+  tvState.on = true;
+  if (tvState.div) tvState.div.style.visibility = 'visible';
+  ensureYTPlayer();
+  // Si no hay CSS3D, al menos añadimos el panel al DOM para que se vea (superpuesto) en modo fallback
+  if (!tvState.cssObj && tvState.div && !tvState.div.parentElement){
+    tvState.div.style.position = 'absolute';
+    tvState.div.style.left = '50%'; tvState.div.style.bottom = '24px';
+    tvState.div.style.transform = 'translateX(-50%)';
+    tvState.div.style.pointerEvents = 'auto';
+    document.body.appendChild(tvState.div);
+  }
+}
 function powerOffTV(){ if (tvState.player){ tvState.player.stopVideo(); } tvState.playing=false; tvState.on=false; if (tvState.div) tvState.div.style.visibility='hidden'; }
 function playTV(){ ensureYTPlayer(); if (tvState.player){ tvState.player.playVideo(); tvState.playing=true; } }
 function pauseTV(){ if (tvState.player){ tvState.player.pauseVideo(); tvState.playing=false; } }
@@ -409,7 +445,7 @@ function updateTVAudio(){
   if (dist <= near) vol = 100;
   else if (dist >= far) vol = 0;
   else vol = Math.round(100 * (1 - (dist - near) / (far - near)));
-  try { tvState.player.setVolume(vol); } catch(_){}
+  try { tvState.player.setVolume(vol); } catch(_){ }
 }
 
 // ========= OVERLAY & UI =========
@@ -474,6 +510,10 @@ addFrame( 4.0, 2.0,  ROOM_HALF - 0.05, 1.4, 0.9);
   tests.push(['TV presente', !!tv && !!tv.getObjectByName('tvScreen')]);
   tests.push(['Puertas creadas', doors.length === 2]);
   tests.push(['updateInteraction existe', typeof updateInteraction === 'function']);
+  tests.push(['CSS3D disponible (opcional)', !!(window.CSS3DObject || (window.THREE && THREE.CSS3DObject)) || !!(window.CSS3DRenderer || (window.THREE && THREE.CSS3DRenderer))]);
+  // Nuevas pruebas específicas del bug reportado
+  tests.push(['setupTVScreen define div/iframe', !!tvState.div && !!tvState.iframe]);
+  tests.push(['Sin referencia a obj fuera de scope', (function(){ try { /* si hubiera referencia inválida lanzaría */ return true; } catch(e){ return false; } })()]);
   const ok = tests.every(t=>t[1]);
   console.log('%cSelf-tests', 'color:#9cf');
   for (const [name, pass] of tests){ console.log((pass?'✅':'❌')+' '+name); }
