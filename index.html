@@ -15,250 +15,414 @@
     #hud { position: fixed; left: 12px; bottom: 12px; color: #bfc3ff; font-size: 12px; line-height: 1.35; opacity: .9; z-index: 2; user-select: none; }
     #hud kbd { background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.15); padding: 2px 6px; border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
     #notice { position: fixed; top: 10px; right: 12px; color: #ddd; font-size: 12px; opacity: .85; z-index: 2; }
+    #controlsPanel { position: fixed; top: 12px; left: 12px; z-index: 3; background: rgba(20,20,24,0.6); border: 1px solid rgba(255,255,255,0.12); border-radius: 10px; padding: 8px 10px; color: #eaeaea; font-size: 12px; backdrop-filter: blur(6px); }
+    #controlsPanel label { display: flex; align-items: center; gap: 8px; }
+    #controlsPanel input[type=range]{ width: 140px; }
     canvas { display: block; }
+    #interaction { position: fixed; left: 50%; bottom: 18%; transform: translateX(-50%); background: rgba(0,0,0,0.55); color: #fff; padding: 6px 10px; border-radius: 8px; font-size: 13px; letter-spacing: .2px; backdrop-filter: blur(4px); z-index: 4; }
   </style>
 </head>
 <body>
   <div id="overlay">
     <div class="panel">
       <h1>Museo 3D – Vista en Primera Persona</h1>
-      <p>Haz clic para entrar y bloquear el mouse.</p>
-      <p>Movimiento: <kbd>W</kbd> adelante · <kbd>S</kbd> atrás · <kbd>A</kbd> izquierda · <kbd>D</kbd> derecha</p>
+      <p>Haz clic para entrar. Si tu navegador no concede el bloqueo del mouse, <strong>mantén clic y arrastra</strong> para mirar.</p>
+      <p>Movimiento: <kbd>W</kbd> adelante · <kbd>S</kbd> atrás · <kbd>A</kbd> izquierda · <kbd>D</kbd> derecha · <kbd>Shift</kbd> correr</p>
       <p>Mirar: mueve el mouse · Salir del bloqueo: <kbd>Esc</kbd></p>
       <button id="start" class="btn">Entrar al museo</button>
     </div>
   </div>
-  <div id="hud">WASD para moverte · Mouse para mirar</div>
+  <div id="hud">WASD para moverte · Mouse para mirar · <kbd>Shift</kbd> para correr</div>
   <div id="notice" hidden>Click para volver a entrar</div>
+  <div id="controlsPanel">
+    <label>
+      Sensibilidad
+      <input type="range" id="sens" min="0.5" max="2" step="0.1" value="1">
+      <span id="sensVal">1.0×</span>
+    </label>
+    <div style="margin-top:4px; opacity:.8;">Mantén <kbd>Shift</kbd> para correr</div>
+  </div>
+  <div id="interaction" hidden>Abrir</div>
 
   <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/controls/PointerLockControls.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/renderers/CSS3DRenderer.js"></script>
+  <script src="https://www.youtube.com/iframe_api"></script>
 <script>
-    // --- Escena básica ---
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x111214);
+// ========= CONFIG =========
+const BASE_HEIGHT = 1.6;      // altura ojos
+const WALK_SPEED = 3.2;       // m/s caminar
+const RUN_SPEED  = 6.0;       // m/s correr
+const BASE_SENS_X = 0.0022;   // yaw base
+const BASE_SENS_Y = 0.0018;   // pitch base
+let sensMul = 1.0;            // multiplicador (slider)
 
-    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+// Habitaciones: tamaño y disposición
+const ROOM_SIZE = 16;               // 16m x 16m
+const ROOM_HALF = ROOM_SIZE/2;      // 8m
+const ROOMS = [
+  { name: 'C', x: -ROOM_SIZE },     // sala C (oeste)
+  { name: 'A', x: 0 },              // sala A (centro)
+  { name: 'B', x: ROOM_SIZE }       // sala B (este)
+];
+const WORLD_MIN_X = -ROOM_SIZE*1.5; // -24m
+const WORLD_MAX_X =  ROOM_SIZE*1.5; //  24m
+const WORLD_MIN_Z = -ROOM_HALF;     //  -8m
+const WORLD_MAX_Z =  ROOM_HALF;     //   8m
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.shadowMap.enabled = true;
-    document.body.appendChild(renderer.domElement);
+// ========= ESCENA =========
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x111214);
 
-    // --- Iluminación ---
-    const hemi = new THREE.HemisphereLight(0xffffff, 0x303040, 0.5);
-    scene.add(hemi);
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1500);
 
-    const keyLight = new THREE.DirectionalLight(0xffffff, 1.0);
-    keyLight.position.set(5, 8, 4);
-    keyLight.castShadow = true;
-    keyLight.shadow.mapSize.set(1024, 1024);
-    scene.add(keyLight);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+renderer.domElement.setAttribute('tabindex', '0');
+renderer.domElement.focus();
 
-    const fillLight = new THREE.SpotLight(0x8eb5ff, 0.45, 30, Math.PI / 6, 0.3, 1.0);
-    fillLight.position.set(-4, 6, -5);
-    fillLight.castShadow = true;
-    scene.add(fillLight);
+// CSS3D renderer (para incrustar iframe de YouTube en la TV)
+const cssRenderer = new THREE.CSS3DRenderer();
+cssRenderer.setSize(window.innerWidth, window.innerHeight);
+cssRenderer.domElement.style.position = 'absolute';
+cssRenderer.domElement.style.top = '0';
+cssRenderer.domElement.style.left = '0';
+cssRenderer.domElement.style.pointerEvents = 'none';
+document.body.appendChild(cssRenderer.domElement);
 
-    // --- Controles en primera persona ---
-    const controls = new THREE.PointerLockControls(camera, document.body);
-    const player = controls.getObject(); // cámara envuelta por los controles
-    scene.add(player);
+// ========= ILUMINACIÓN =========
+const hemi = new THREE.HemisphereLight(0xffffff, 0x303040, 0.65); scene.add(hemi);
+const keyLight = new THREE.DirectionalLight(0xffffff, 1.0); keyLight.position.set(5, 8, 4); keyLight.castShadow = true; keyLight.shadow.mapSize.set(1024, 1024); scene.add(keyLight);
+const fillLight = new THREE.SpotLight(0x8eb5ff, 0.45, 30, Math.PI/6, 0.3, 1.0); fillLight.position.set(-4, 6, -5); fillLight.castShadow = true; scene.add(fillLight);
 
-    const BASE_HEIGHT = 1.6;  // Altura "ojos"
-    player.position.set(0, BASE_HEIGHT, 6.5);
+// ========= PLAYER =========
+const player = new THREE.Object3D();
+player.position.set(0, BASE_HEIGHT, 6.5);
+scene.add(player);
 
-    // --- Sala/museo (habitáculo) ---
-    const ROOM_HALF = 8; // semitamaño de la sala (X y Z)
+const pitchObj = new THREE.Object3D();
+pitchObj.add(camera);
+const yawObj = player; yawObj.add(pitchObj);
+let yaw = 0, pitch = 0; function applyLook(){ yawObj.rotation.y = yaw; pitchObj.rotation.x = pitch; }
 
-    // Caja invertida como sala
-    const roomGeo = new THREE.BoxGeometry(ROOM_HALF * 2, 6, ROOM_HALF * 2);
-    const roomMat = new THREE.MeshStandardMaterial({ color: 0x16181d, side: THREE.BackSide, roughness: 0.95, metalness: 0.0 });
-    const room = new THREE.Mesh(roomGeo, roomMat);
-    room.position.y = 3; // centrar altura
-    room.receiveShadow = true;
-    scene.add(room);
+// ========= MATERIALES =========
+const WALL_COLOR = 0xEADFF9; // pastel
+const FLOOR_COLOR = 0xC8CCD4; // gris claro
 
-    // Suelo
-    const floorGeo = new THREE.PlaneGeometry(ROOM_HALF * 2, ROOM_HALF * 2, 1, 1);
-    const floorMat = new THREE.MeshStandardMaterial({ color: 0x24262b, roughness: 0.9, metalness: 0.05 });
-    const floor = new THREE.Mesh(floorGeo, floorMat);
-    floor.rotation.x = -Math.PI / 2;
-    floor.receiveShadow = true;
-    scene.add(floor);
+// ========= UTILIDADES =========
+const obstacles = []; // colisiones estáticas (paredes, muebles)
+function addObstacleFromObject(obj){ obj.updateMatrixWorld(true); obstacles.push({obj, box:new THREE.Box3().setFromObject(obj)}); }
+function refreshObstacleBoxes(){ for(const o of obstacles){ o.obj.updateMatrixWorld(true); o.box.setFromObject(o.obj); } }
+function intersectsAny(box){ for(const o of obstacles){ if(box.intersectsBox(o.box)) return true; } return false; }
 
-    // Sutil patrón tipo baldosa
-    const gridHelper = new THREE.GridHelper(ROOM_HALF * 2, 16, 0x2f3340, 0x2f3340);
-    gridHelper.position.y = 0.001; // evitar z-fighting
-    scene.add(gridHelper);
+// Crea un segmento de pared como colisionador visible/invisible
+function wallSegment(x, y, z, sx, sy, sz, visible=false){
+  const mat = new THREE.MeshStandardMaterial({ color: WALL_COLOR, roughness: 0.95, metalness: 0.0 });
+  const m = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), mat);
+  m.position.set(x, y, z);
+  if (!visible) { m.material.visible = false; }
+  scene.add(m); addObstacleFromObject(m); return m;
+}
 
-    // --- Pedestal + Cubo de exhibición ---
-    const pedestalGeo = new THREE.CylinderGeometry(0.6, 0.7, 1.0, 24);
-    const pedestalMat = new THREE.MeshStandardMaterial({ color: 0x3a3f4b, roughness: 0.7, metalness: 0.2 });
-    const pedestal = new THREE.Mesh(pedestalGeo, pedestalMat);
-    pedestal.position.set(0, 0.5, -2.5);
-    pedestal.castShadow = true; pedestal.receiveShadow = true;
-    scene.add(pedestal);
+// Genera una habitación completa en xOffset (caja invertida + piso) y colisiones de paredes con huecos para puertas
+function createRoom(xOffset){
+  const shell = new THREE.Mesh(new THREE.BoxGeometry(ROOM_SIZE, 6, ROOM_SIZE), new THREE.MeshStandardMaterial({ color: WALL_COLOR, side: THREE.BackSide, roughness: 0.95, metalness: 0.0 }));
+  shell.position.set(xOffset, 3, 0); shell.receiveShadow = true; scene.add(shell);
 
-    const cubeGeo = new THREE.BoxGeometry(0.9, 0.9, 0.9);
-    const cubeMat = new THREE.MeshPhysicalMaterial({ color: 0xa9b3ff, roughness: 0.2, metalness: 0.6, transmission: 0.0, clearcoat: 0.6, clearcoatRoughness: 0.35 });
-    const artCube = new THREE.Mesh(cubeGeo, cubeMat);
-    artCube.position.set(0, 1.45, -2.5);
-    artCube.castShadow = true; artCube.receiveShadow = true;
-    scene.add(artCube);
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(ROOM_SIZE, ROOM_SIZE), new THREE.MeshStandardMaterial({ color: FLOOR_COLOR, roughness: 0.9, metalness: 0.05 }));
+  floor.rotation.x = -Math.PI/2; floor.position.set(xOffset, 0, 0); floor.receiveShadow = true; scene.add(floor);
 
-    // Luz puntual sobre la obra
-    const artLight = new THREE.SpotLight(0xffffff, 1.2, 12, Math.PI/10, 0.4, 1);
-    artLight.position.set(0.8, 4.5, -1.8);
-    artLight.target = artCube;
-    artLight.castShadow = true;
-    scene.add(artLight); scene.add(artLight.target);
+  // Colisiones de paredes (dejando aberturas de puerta en ESTE/OESTE para A-B y A-C)
+  const t = 0.12, h=2.5, gapW=1.2, gapZ=-2.0; // posición de hueco de puerta lateral
 
-    // --- Colisiones simples (paredes y pedestal/obra) ---
-    const obstacles = [];
-    function addObstacleFromObject(obj){
-      obj.updateMatrixWorld(true);
-      const box = new THREE.Box3().setFromObject(obj);
-      obstacles.push(box);
+  // Norte (sin hueco)
+  wallSegment(xOffset, h/2, -ROOM_HALF + t/2, ROOM_SIZE, h, t);
+  // Sur (deja hueco de 2m solo en sala A, centro)
+  if (xOffset===0){
+    const leftW = (ROOM_SIZE - 2.0)/2; wallSegment(xOffset - (2.0/2 + leftW/2), h/2, ROOM_HALF - t/2, leftW, h, t);
+    wallSegment(xOffset + (2.0/2 + leftW/2), h/2, ROOM_HALF - t/2, leftW, h, t);
+  } else {
+    wallSegment(xOffset, h/2, ROOM_HALF - t/2, ROOM_SIZE, h, t);
+  }
+  // Oeste: segmentos arriba/abajo del hueco
+  const segTop = (ROOM_SIZE - gapW)/2; // tramo por arriba del hueco
+  wallSegment(xOffset - ROOM_HALF + t/2, h/2, (gapZ + ROOM_HALF + segTop/2), t, h, segTop);
+  wallSegment(xOffset - ROOM_HALF + t/2, h/2, (-ROOM_HALF + segTop/2 + (gapZ - segTop/2)), t, h, segTop);
+  // Este (mismo criterio)
+  wallSegment(xOffset + ROOM_HALF - t/2, h/2, (gapZ + ROOM_HALF + segTop/2), t, h, segTop);
+  wallSegment(xOffset + ROOM_HALF - t/2, h/2, (-ROOM_HALF + segTop/2 + (gapZ - segTop/2)), t, h, segTop);
+
+  return { shell, floor };
+}
+
+// Crear las tres salas
+for (const r of ROOMS){ createRoom(r.x); }
+
+// ========= MUEBLES BASE EN A =========
+function createSofa(){
+  const g = new THREE.Group();
+  const fabric = new THREE.MeshStandardMaterial({ color: 0xBFD0FF, roughness: 0.9, metalness: 0.05 });
+  const wood   = new THREE.MeshStandardMaterial({ color: 0x4a3c2f, roughness: 0.8, metalness: 0.1 });
+  const legH = 0.2, seatH = 0.45;
+  const seat = new THREE.Mesh(new THREE.BoxGeometry(1.6, seatH, 0.8), fabric); seat.position.y = legH + seatH/2; seat.castShadow = seat.receiveShadow = true; g.add(seat);
+  const back = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.6, 0.18), fabric); back.position.set(0, legH + seatH + 0.3, -0.31); back.castShadow = back.receiveShadow = true; g.add(back);
+  const armL = new THREE.Mesh(new THREE.BoxGeometry(0.18, seatH, 0.8), fabric); armL.position.set(-0.89, legH + seatH/2, 0); armL.castShadow = armL.receiveShadow = true; g.add(armL);
+  const armR = armL.clone(); armR.position.x = 0.89; g.add(armR);
+  function leg(x,z){ const m = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, legH, 16), wood); m.position.set(x, legH/2, z); m.castShadow = m.receiveShadow = true; g.add(m); }
+  leg( 0.68,  0.3); leg(-0.68,  0.3); leg( 0.68, -0.3); leg(-0.68, -0.3);
+  return g;
+}
+const sofa = createSofa(); sofa.position.set(0, 0, -0.5); sofa.rotation.y = Math.PI; sofa.scale.set(2.0, 1.0, 1.2); scene.add(sofa); addObstacleFromObject(sofa);
+
+function createTVCabinet(){
+  const g = new THREE.Group();
+  const matBench = new THREE.MeshStandardMaterial({ color: 0x44484f, roughness: 0.85, metalness: 0.2 });
+  const matMetal = new THREE.MeshStandardMaterial({ color: 0x777a80, roughness: 0.5, metalness: 0.8 });
+  const matScreen = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.6, metalness: 0.3 });
+  const bench = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.6, 0.5), matBench); bench.position.y = 0.3; bench.castShadow = bench.receiveShadow = true; g.add(bench);
+  const post = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1.1, 0.12), matMetal); post.position.set(0, 0.3 + 1.1/2, -0.20); post.castShadow = post.receiveShadow = true; g.add(post);
+  const bracket = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.08, 0.08), matMetal); bracket.position.set(0, 0.3 + 1.1, -0.24); bracket.castShadow = bracket.receiveShadow = true; g.add(bracket);
+  const screenBody = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.35, 0.08), matScreen);
+screenBody.name = 'tvScreen'; screenBody.position.set(0, 0.3 + 1.1 + 0.3, -0.28); screenBody.castShadow = true; screenBody.receiveShadow = true; g.add(screenBody);
+  const bezel = new THREE.Mesh(new THREE.BoxGeometry(2.42, 1.37, 0.02), new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.4, metalness: 0.6 }));
+  bezel.position.set(0, 0.3 + 1.1 + 0.3, -0.23); g.add(bezel);
+  return g;
+}
+const tv = createTVCabinet();
+ tv.position.set(0, 0, -4.7);
+ // Giramos todo el conjunto (mueble + columna + pantalla) para que mire al sofá
+ tv.rotation.y = Math.PI;
+ scene.add(tv);
+ addObstacleFromObject(tv);
+
+// ====== TV: YouTube + pantalla CSS3D ======
+const tvState = { on:false, playing:false, apiReady:false, player:null, cssObj:null, iframe:null, videoId:'8s1sh-CRMXc' };
+
+function setupTVScreen(){
+  const screen = tv.getObjectByName('tvScreen');
+  if (!screen) return;
+  screen.updateMatrixWorld(true);
+  const pos = new THREE.Vector3(); const quat = new THREE.Quaternion();
+  screen.getWorldPosition(pos); screen.getWorldQuaternion(quat);
+  const div = document.createElement('div');
+  div.style.width = '960px';
+  div.style.height = '540px';
+  div.style.background = '#000';
+  div.style.pointerEvents = 'none';
+  const iframe = document.createElement('iframe');
+  iframe.id = 'yt_tv_'+Date.now();
+  iframe.width = '960'; iframe.height = '540'; iframe.frameBorder = '0';
+  iframe.allow = 'autoplay; encrypted-media; picture-in-picture';
+  iframe.referrerPolicy = 'strict-origin-when-cross-origin';
+  iframe.src = 'https://www.youtube.com/embed/'+tvState.videoId+'?enablejsapi=1&rel=0&controls=0&modestbranding=1&playsinline=1&loop=1&playlist='+tvState.videoId;
+  div.appendChild(iframe);
+  const obj = new THREE.CSS3DObject(div);
+  obj.position.copy(pos); obj.quaternion.copy(quat);
+  const scale = 2.4/960; // 2.4m de ancho -> 960 px
+  obj.scale.set(scale, scale, scale);
+  scene.add(obj);
+  tvState.cssObj = obj; tvState.iframe = iframe; tvState.div = div; tvState.div.style.visibility = 'hidden';
+}
+setupTVScreen();
+
+window.onYouTubeIframeAPIReady = function(){ tvState.apiReady = true; };
+
+function ensureYTPlayer(){
+  if (!tvState.apiReady || tvState.player) return;
+  tvState.player = new YT.Player(tvState.iframe, {
+    events: {
+      'onReady': (e)=>{ e.target.setVolume(0); },
+      'onStateChange': (e)=>{ const S = YT.PlayerState; tvState.playing = (e.data === S.PLAYING); }
+    },
+    playerVars: { autoplay: 0, controls: 0, rel: 0, loop: 1, playlist: tvState.videoId, modestbranding: 1, playsinline: 1 }
+  });
+}
+
+function powerOnTV(){ tvState.on = true; if (tvState.div) tvState.div.style.visibility = 'visible'; ensureYTPlayer(); }
+function powerOffTV(){ if (tvState.player){ tvState.player.stopVideo(); } tvState.playing=false; tvState.on=false; if (tvState.div) tvState.div.style.visibility='hidden'; }
+function playTV(){ ensureYTPlayer(); if (tvState.player){ tvState.player.playVideo(); tvState.playing=true; } }
+function pauseTV(){ if (tvState.player){ tvState.player.pauseVideo(); tvState.playing=false; } }
+
+// ========= EXTRAS EN SALAS B y C =========
+function createBed(){
+  const g = new THREE.Group();
+  const frame = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.35, 1.6), new THREE.MeshStandardMaterial({ color: 0x8b6b4f, roughness: 0.85 })); frame.position.y = 0.175; frame.castShadow = frame.receiveShadow = true; g.add(frame);
+  const mattress = new THREE.Mesh(new THREE.BoxGeometry(1.95, 0.25, 1.55), new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 0.9 })); mattress.position.y = 0.35; g.add(mattress);
+  const pillow = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.15, 0.35), new THREE.MeshStandardMaterial({ color: 0xffffff })); pillow.position.set(0.55, 0.48, -0.5); g.add(pillow);
+  return g;
+}
+function createFridge(){
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.8, 0.7), new THREE.MeshStandardMaterial({ color: 0xdfe6ee, roughness: 0.85 })); body.position.y = 0.9; body.castShadow = body.receiveShadow = true; g.add(body);
+  const handle = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.5, 0.04), new THREE.MeshStandardMaterial({ color: 0x888888 })); handle.position.set(0.38, 1.0, 0.35); g.add(handle);
+  return g;
+}
+// En sala B (este): cama al costado
+const bedB = createBed(); bedB.position.set(ROOM_SIZE, 0, 6.0); bedB.rotation.y = Math.PI/2; scene.add(bedB); addObstacleFromObject(bedB);
+// En sala C (oeste): refrigerador al costado
+const fridgeC = createFridge(); fridgeC.position.set(-ROOM_SIZE, 0, 6.0); fridgeC.rotation.y = -Math.PI/2; scene.add(fridgeC); addObstacleFromObject(fridgeC);
+
+// ========= PUERTAS INTERACTIVAS =========
+const interactables = [];
+const doors = [];
+const DOOR_Z = -2.0, DOOR_W = 1.2, DOOR_T = 0.08, DOOR_H = 2.1;
+
+function createDoor(side, xOffset){
+  const group = new THREE.Group();
+  let hingeX = xOffset + (side==='east' ? ROOM_HALF - DOOR_T/2 : -ROOM_HALF + DOOR_T/2);
+  const hingeZ = DOOR_Z;
+  const hinge = new THREE.Object3D(); hinge.position.set(hingeX, DOOR_H/2, hingeZ); group.add(hinge);
+  const leaf = new THREE.Mesh(new THREE.BoxGeometry(DOOR_W, DOOR_H, DOOR_T), new THREE.MeshStandardMaterial({ color: 0xbababa, roughness: 0.8 }));
+  const dir = (side==='east' ? -1 : 1); leaf.position.x = dir * (DOOR_W/2); hinge.add(leaf);
+  scene.add(group);
+  const door = { group, hinge, leaf, isOpen:false, angle:0, target:0, dir:(side==='east'?1:-1) };
+  doors.push(door); interactables.push({ type:'door', mesh: leaf, ref: door });
+}
+createDoor('east', 0); // A -> B
+createDoor('west', 0); // A -> C
+
+// ========= INPUT =========
+const keys = { forward:false, back:false, left:false, right:false, shift:false, interact:false };
+function onKey(e, down){
+  switch(e.code){
+    case 'KeyW': keys.forward = down; break;
+    case 'KeyS': keys.back    = down; break;
+    case 'KeyA': keys.left    = down; break;
+    case 'KeyD': keys.right   = down; break;
+    case 'ShiftLeft':
+    case 'ShiftRight': keys.shift = down; break;
+    case 'KeyE': keys.interact = down; break;
+    case 'Escape': showOverlay(); break;
+  }
+}
+window.addEventListener('keydown', e => onKey(e, true));
+window.addEventListener('keyup',   e => onKey(e, false));
+
+let usingPointerLock = false; let dragging = false;
+function lockPointer(){ if (document.pointerLockElement === renderer.domElement) return; renderer.domElement.requestPointerLock?.(); }
+function unlockPointer(){ if (document.pointerLockElement) document.exitPointerLock?.(); }
+
+document.addEventListener('pointerlockchange', () => { usingPointerLock = (document.pointerLockElement === renderer.domElement); if (usingPointerLock) hideOverlay(); else showOverlay(true); });
+document.addEventListener('pointerlockerror', () => { usingPointerLock = false; hideOverlay(); });
+
+renderer.domElement.addEventListener('mousedown', (e) => { if (!usingPointerLock && e.button === 0) dragging = true; });
+renderer.domElement.addEventListener('mouseup',   () => { dragging = false; });
+renderer.domElement.addEventListener('mouseleave',() => { dragging = false; });
+renderer.domElement.addEventListener('contextmenu', (e)=>e.preventDefault());
+
+function handleMouseMove(e){
+  let dx = e.movementX || 0, dy = e.movementY || 0;
+  if (!usingPointerLock){ if (!dragging) return; }
+  yaw -= dx * BASE_SENS_X * sensMul; pitch -= dy * BASE_SENS_Y * sensMul;
+  const maxP = Math.PI/2 - 0.01; if (pitch > maxP) pitch = maxP; if (pitch < -maxP) pitch = -maxP; applyLook();
+}
+renderer.domElement.addEventListener('mousemove', handleMouseMove);
+
+// ========= INTERACCIÓN =========
+const interactUI = document.getElementById('interaction');
+const raycaster = new THREE.Raycaster();
+const ndc = new THREE.Vector2(0,0);
+let lastHover = null;
+function updateInteraction(){
+  // 1) Intento de interacción por raycast (puertas)
+  raycaster.setFromCamera(ndc, camera);
+  const meshes = interactables.map(i => i.mesh);
+  const hits = raycaster.intersectObjects(meshes, false);
+  if (hits.length > 0){
+    const item = interactables.find(i => i.mesh === hits[0].object);
+    if (item && item.type==='door'){
+      interactUI.textContent = item.ref.isOpen ? 'Cerrar' : 'Abrir';
+      interactUI.hidden = false;
+      if (keys.interact){ toggleDoor(item.ref); keys.interact = false; }
+      return; // prioridad a puertas si están al centro de la mira
     }
-    addObstacleFromObject(pedestal);
-    addObstacleFromObject(artCube);
+  }
 
-    const PLAYER_RADIUS = 0.35;
-    const PLAYER_HEIGHT = 1.8;
-    const BORDER = 0.15; // margen para las paredes
+  // 2) Interacción con TV por proximidad y ángulo (sin necesidad de raycast sobre pantalla)
+  const tvPos = new THREE.Vector3(); tv.getWorldPosition(tvPos);
+  const forward = new THREE.Vector3(0,0,-1).applyQuaternion(tv.quaternion).normalize();
+  const toPlayer = new THREE.Vector3().subVectors(player.position, tvPos); const dist = toPlayer.length(); toPlayer.y = 0; toPlayer.normalize();
+  const dot = forward.dot(toPlayer); // >0 frente, <0 detrás
 
-    function intersectsAny(box){
-      for(const o of obstacles){ if(box.intersectsBox(o)) return true; }
-      return false;
-    }
+  let label = null;
+  if (dist < 4.5 && dot > 0.25){
+    // Frente a la TV
+    if (!tvState.on) label = 'Encender';
+    else label = tvState.playing ? 'Pause' : 'Play';
+    if (keys.interact){ if (!tvState.on) powerOnTV(); else if (tvState.playing) pauseTV(); else playTV(); keys.interact = false; }
+  } else if (dist < 2.2 && dot < -0.25){
+    // Detrás de la TV, cerca
+    label = 'Desconectar';
+    if (keys.interact){ powerOffTV(); keys.interact = false; }
+  }
 
-    function canMoveTo(nx, nz){
-      // límites de sala
-      if (nx < -ROOM_HALF + PLAYER_RADIUS + BORDER || nx > ROOM_HALF - PLAYER_RADIUS - BORDER) return false;
-      if (nz < -ROOM_HALF + PLAYER_RADIUS + BORDER || nz > ROOM_HALF - PLAYER_RADIUS - BORDER) return false;
-      const playerBox = new THREE.Box3(
-        new THREE.Vector3(nx - PLAYER_RADIUS, 0, nz - PLAYER_RADIUS),
-        new THREE.Vector3(nx + PLAYER_RADIUS, PLAYER_HEIGHT, nz + PLAYER_RADIUS)
-      );
-      return !intersectsAny(playerBox);
-    }
+  if (label){ interactUI.textContent = label; interactUI.hidden = false; }
+  else { interactUI.hidden = true; }
+}
+  } else { lastHover = null; interactUI.hidden = true; }
+}
+function toggleDoor(door){ door.target = door.isOpen ? 0 : door.dir * Math.PI/2; door.isOpen = !door.isOpen; }
+function updateDoors(dt){ for(const d of doors){ const diff = d.target - d.angle; if (Math.abs(diff) < 0.001) continue; const step = Math.sign(diff) * Math.min(Math.abs(diff), dt * 2.5); d.angle += step; d.hinge.rotation.y = d.angle; } }
 
-    // --- Entrada/overlay (Pointer Lock) ---
-    const overlay = document.getElementById('overlay');
-    const startBtn = document.getElementById('start');
-    const notice = document.getElementById('notice');
+// ========= AUDIO TV (atenuación por distancia) =========
+function updateTVAudio(){
+  if (!tvState.player || !tvState.on) return;
+  const tvPos = new THREE.Vector3(); tv.getWorldPosition(tvPos);
+  const dist = tvPos.distanceTo(player.position);
+  const near = 1.0, far = 12.0;
+  let vol = 0;
+  if (dist <= near) vol = 100;
+  else if (dist >= far) vol = 0;
+  else vol = Math.round(100 * (1 - (dist - near) / (far - near)));
+  try { tvState.player.setVolume(vol); } catch(_){}
+}
 
-    startBtn.addEventListener('click', () => controls.lock());
+// ========= OVERLAY & UI =========
+const overlay = document.getElementById('overlay');
+const startBtn = document.getElementById('start');
+const notice = document.getElementById('notice');
+function hideOverlay(){ overlay.style.display = 'none'; notice.hidden = true; }
+function showOverlay(showNotice=true){ overlay.style.display = 'grid'; notice.hidden = !showNotice; }
+startBtn.addEventListener('click', () => { hideOverlay(); lockPointer(); });
+const sensSlider = document.getElementById('sens'); const sensVal = document.getElementById('sensVal');
+sensSlider.addEventListener('input', () => { sensMul = parseFloat(sensSlider.value); sensVal.textContent = sensMul.toFixed(1) + '×'; });
+renderer.domElement.addEventListener('click', () => { if (!usingPointerLock) lockPointer(); });
 
-    controls.addEventListener('lock', () => {
-      overlay.style.display = 'none';
-      notice.hidden = true;
-    });
+// ========= MOVIMIENTO =========
+const clock = new THREE.Clock(); let bobPhase = 0; const tmpForward = new THREE.Vector3(); const tmpRight = new THREE.Vector3(); const up = new THREE.Vector3(0,1,0);
+function canMoveTo(nx, nz){
+  if (nx < WORLD_MIN_X + 0.2 || nx > WORLD_MAX_X - 0.2) return false;
+  if (nz < WORLD_MIN_Z + 0.2 || nz > WORLD_MAX_Z - 0.2) return false;
+  const PLAYER_RADIUS = 0.35, PLAYER_HEIGHT = 1.8; const pb = new THREE.Box3(new THREE.Vector3(nx - PLAYER_RADIUS, 0, nz - PLAYER_RADIUS), new THREE.Vector3(nx + PLAYER_RADIUS, PLAYER_HEIGHT, nz + PLAYER_RADIUS));
+  return !intersectsAny(pb);
+}
+function animate(){
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.033);
+  refreshObstacleBoxes(); updateDoors(dt); updateInteraction(); updateTVAudio();
+  tmpForward.set(0,0,-1).applyAxisAngle(up, yaw).normalize(); tmpRight.crossVectors(tmpForward, up).normalize();
+  const hasInput = keys.forward || keys.back || keys.left || keys.right; const moveVec = new THREE.Vector3();
+  if (keys.forward) moveVec.add(tmpForward); if (keys.back) moveVec.addScaledVector(tmpForward, -1); if (keys.right) moveVec.add(tmpRight); if (keys.left) moveVec.addScaledVector(tmpRight, -1);
+  const curSpeed = (keys.shift ? RUN_SPEED : WALK_SPEED); if (hasInput) moveVec.normalize().multiplyScalar(curSpeed * dt);
+  const curX = player.position.x, curZ = player.position.z; let nx = curX, nz = curZ; if (moveVec.x !== 0){ const tryX = curX + moveVec.x; if (canMoveTo(tryX, curZ)) nx = tryX; } if (moveVec.z !== 0){ const tryZ = curZ + moveVec.z; if (canMoveTo(nx, tryZ)) nz = tryZ; }
+  player.position.x = nx; player.position.z = nz;
+  if (hasInput){ bobPhase += dt * 7.0; const bob = Math.sin(bobPhase) * 0.035; player.position.y = BASE_HEIGHT + bob; } else { bobPhase = 0; player.position.y += (BASE_HEIGHT - player.position.y) * Math.min(1, dt * 6); }
+  renderer.render(scene, camera);
+  cssRenderer.render(scene, camera);
+}
+applyLook(); animate();
 
-    controls.addEventListener('unlock', () => {
-      overlay.style.display = 'grid';
-      notice.hidden = false;
-    });
+// ========= RESPONSIVO =========
+window.addEventListener('resize', () => { camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); cssRenderer.setSize(window.innerWidth, window.innerHeight); });
 
-    // --- Entrada de teclado (WASD) ---
-    const keys = { forward:false, back:false, left:false, right:false };
-
-    function onKey(e, down){
-      switch(e.code){
-        case 'KeyW': keys.forward = down; break;
-        case 'KeyS': keys.back = down; break;
-        case 'KeyA': keys.left = down; break;
-        case 'KeyD': keys.right = down; break;
-      }
-    }
-    window.addEventListener('keydown', e => onKey(e, true));
-    window.addEventListener('keyup',   e => onKey(e, false));
-
-    // --- Bambeo/sensación de caminata ---
-    const clock = new THREE.Clock();
-    const SPEED = 3.2; // m/s
-    let bobPhase = 0;  // fase para movimiento vertical
-
-    const tmpForward = new THREE.Vector3();
-    const tmpRight = new THREE.Vector3();
-    const up = new THREE.Vector3(0,1,0);
-
-    function animate(){
-      requestAnimationFrame(animate);
-      const dt = Math.min(clock.getDelta(), 0.033);
-
-      // Dirección de vista
-      camera.getWorldDirection(tmpForward);
-      tmpForward.y = 0; tmpForward.normalize();
-      tmpRight.crossVectors(tmpForward, up).normalize();
-
-      const moveVec = new THREE.Vector3();
-      const hasInput = keys.forward || keys.back || keys.left || keys.right;
-
-      if(keys.forward) moveVec.add(tmpForward);
-      if(keys.back)    moveVec.addScaledVector(tmpForward, -1);
-      if(keys.right)   moveVec.add(tmpRight);
-      if(keys.left)    moveVec.addScaledVector(tmpRight, -1);
-
-      if (hasInput) moveVec.normalize().multiplyScalar(SPEED * dt);
-
-      // Intento de movimiento con resolución por ejes (deslizamiento simple)
-      const curX = player.position.x, curZ = player.position.z;
-      let nx = curX, nz = curZ;
-      if (moveVec.x !== 0) {
-        const tryX = curX + moveVec.x;
-        if (canMoveTo(tryX, curZ)) nx = tryX;
-      }
-      if (moveVec.z !== 0) {
-        const tryZ = curZ + moveVec.z;
-        if (canMoveTo(nx, tryZ)) nz = tryZ;
-      }
-      player.position.x = nx;
-      player.position.z = nz;
-
-      // Cabeceo/bambeo
-      if (hasInput) {
-        bobPhase += dt * 7.0; // frecuencia
-        const bob = Math.sin(bobPhase) * 0.035;
-        player.position.y = BASE_HEIGHT + bob;
-      } else {
-        bobPhase = 0;
-        // volver suave a altura base
-        player.position.y += (BASE_HEIGHT - player.position.y) * Math.min(1, dt * 6);
-      }
-
-      // Animación sutil del cubo
-      artCube.rotation.y += dt * 0.25;
-
-      renderer.render(scene, camera);
-    }
-
-    animate();
-
-    // --- Responsivo ---
-    window.addEventListener('resize', () => {
-      camera.aspect = window.innerWidth / window.innerHeight;
-      camera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth, window.innerHeight);
-    });
-
-    // --- Toques estéticos extra: marcos sutiles en paredes ---
-    function addFrame(x, y, z, w=1.2, h=0.8){
-      const frame = new THREE.Mesh(
-        new THREE.BoxGeometry(w, h, 0.04),
-        new THREE.MeshStandardMaterial({ color: 0x2b2f38, roughness: 0.8, metalness: 0.2 })
-      );
-      frame.position.set(x, y, z);
-      frame.castShadow = true; frame.receiveShadow = false;
-      scene.add(frame);
-      addObstacleFromObject(frame); // también sirve como colisión decorativa sutil
-    }
-    addFrame(-4.0, 2.0, -ROOM_HALF + 0.05, 1.4, 0.9);
-    addFrame( 4.0, 2.0, -ROOM_HALF + 0.05, 1.4, 0.9);
-    addFrame(-4.0, 2.0,  ROOM_HALF - 0.05, 1.4, 0.9);
-    addFrame( 4.0, 2.0,  ROOM_HALF - 0.05, 1.4, 0.9);
-  </script>
+// ========= DECORACIÓN =========
+function addFrame(x, y, z, w=1.2, h=0.8){ const frame = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.04), new THREE.MeshStandardMaterial({ color: 0x2b2f38, roughness: 0.8, metalness: 0.2 })); frame.position.set(x, y, z); frame.castShadow = true; scene.add(frame); addObstacleFromObject(frame); }
+addFrame(-4.0, 2.0, -ROOM_HALF + 0.05, 1.4, 0.9);
+addFrame( 4.0, 2.0, -ROOM_HALF + 0.05, 1.4, 0.9);
+addFrame(-4.0, 2.0,  ROOM_HALF - 0.05, 1.4, 0.9);
+addFrame( 4.0, 2.0,  ROOM_HALF - 0.05, 1.4, 0.9);
+</script>
 </body>
 </html>
