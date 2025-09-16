@@ -227,7 +227,7 @@ const tv = createTVCabinet();
  addObstacleFromObject(tv);
 
 // ====== TV: YouTube + pantalla CSS3D ======
-const tvState = { on:false, playing:false, apiReady:false, player:null, cssObj:null, iframe:null, videoId:'8s1sh-CRMXc' };
+const tvState = { on:false, playing:false, apiReady:false, player:null, playerReady:false, wantPlay:false, cssObj:null, iframe:null, videoId:'8s1sh-CRMXc' };
 
 function setupTVScreen(){
   const screen = tv.getObjectByName('tvScreen');
@@ -247,7 +247,7 @@ function setupTVScreen(){
   iframe.width = '960'; iframe.height = '540'; iframe.frameBorder = '0';
   iframe.allow = 'autoplay; encrypted-media; picture-in-picture';
   iframe.referrerPolicy = 'strict-origin-when-cross-origin';
-  iframe.src = 'https://www.youtube.com/embed/'+tvState.videoId+'?enablejsapi=1&rel=0&controls=0&modestbranding=1&playsinline=1&loop=1&playlist='+tvState.videoId;
+  iframe.src = 'https://www.youtube.com/embed/'+tvState.videoId+'?enablejsapi=1&rel=0&controls=0&modestbranding=1&playsinline=1&loop=1&playlist='+tvState.videoId+'&origin='+encodeURIComponent(window.location.origin);
   div.appendChild(iframe);
 
   // Detecta constructores CSS3D
@@ -286,13 +286,29 @@ function attachTVDivToScreen(){
 }
 if (cssRenderer && !tvState.cssObj) attachTVDivToScreen();
 
-window.onYouTubeIframeAPIReady = function(){ tvState.apiReady = true; };
+window.onYouTubeIframeAPIReady = function(){ tvState.apiReady = true; ensureYTPlayer(); if (tvState.wantPlay && tvState.playerReady && tvState.player) { try { tvState.player.playVideo(); tvState.playing = true; } catch(_){} } };
 
 function ensureYTPlayer(){
-  if (!tvState.apiReady || tvState.player) return;
+  // Crear el player sólo cuando la API esté lista
+  if (tvState.player) return tvState.player;
+  if (!tvState.apiReady || !tvState.iframe) return null;
   tvState.player = new YT.Player(tvState.iframe, {
+    host: 'https://www.youtube.com',
     events: {
-      'onReady': (e)=>{ e.target.setVolume(0); },
+      'onReady': (e)=>{
+        tvState.playerReady = true;
+        try { e.target.mute(); } catch(_){}
+        // Si el usuario pidió Play antes de que el player esté listo
+        if (tvState.wantPlay) {
+          try { e.target.playVideo(); tvState.playing = true; } catch(_){}
+        }
+      },
+      'onStateChange': (e)=>{ const S = YT.PlayerState; tvState.playing = (e.data === S.PLAYING); }
+    },
+    playerVars: { autoplay: 0, controls: 0, rel: 0, loop: 1, playlist: tvState.videoId, modestbranding: 1, playsinline: 1, origin: window.location.origin }
+  });
+  return tvState.player;
+},
       'onStateChange': (e)=>{ const S = YT.PlayerState; tvState.playing = (e.data === S.PLAYING); }
     },
     playerVars: { autoplay: 0, controls: 0, rel: 0, loop: 1, playlist: tvState.videoId, modestbranding: 1, playsinline: 1 }
@@ -305,7 +321,13 @@ function powerOnTV(){
   ensureYTPlayer();
 }
 function powerOffTV(){ if (tvState.player){ tvState.player.stopVideo(); } tvState.playing=false; tvState.on=false; if (tvState.div) tvState.div.style.visibility='hidden'; }
-function playTV(){ ensureYTPlayer(); if (tvState.player){ tvState.player.playVideo(); tvState.playing=true; } }
+function playTV(){
+  tvState.wantPlay = true;
+  const p = ensureYTPlayer();
+  if (p && tvState.apiReady) {
+    try { p.playVideo(); tvState.playing = true; } catch(_){}
+  }
+} }
 function pauseTV(){ if (tvState.player){ tvState.player.pauseVideo(); tvState.playing=false; } }
 
 // ========= EXTRAS EN SALAS B y C =========
@@ -467,7 +489,7 @@ function updateTVAudio(){
   if (dist <= near) vol = 100;
   else if (dist >= far) vol = 0;
   else vol = Math.round(100 * (1 - (dist - near) / (far - near)));
-  try { tvState.player.setVolume(vol); } catch(_){ }
+  try { tvState.player.setVolume(vol); if (vol > 0) { tvState.player.unMute(); } else { tvState.player.mute(); } } catch(_){ }
 }
 
 // ========= OVERLAY & UI =========
@@ -548,3 +570,4 @@ addFrame( 4.0, 2.0,  ROOM_HALF - 0.05, 1.4, 0.9);
 </script>
 </body>
 </html>
+
